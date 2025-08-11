@@ -31,86 +31,101 @@ import { useToast } from "@/hooks/use-toast";
 import { createQuiz, updateQuiz, deleteQuiz } from "@/services/quiz-service";
 import { uploadQuizImage } from "@/services/storage-service";
 
-/* ---------------------------------- Parser --------------------------------- */
+/* ============================= Parser Utilities ============================ */
+
+// Accepts A-Z or 1..999 prefixes, and bullets like "-" or "•"
+// Require a real delimiter after the label, so normal sentences won't match.
+// Supports "(A) ", "A) ", "A.", "A:", "A-", "A–", "A—", with or without space after.
+// Also supports bullets "-" and "•".
+const OPTION_PREFIX =
+  /^\s*(?:[-•]\s+|\(?\s*([A-Za-z]|\d{1,3})\s*\)?[.)\:–—-]\s*)/;
+
+
+// Extracts e.g. "Answer: A,C" / "Answers: 1,3"
+function extractExplicitAnswers(raw: string): Set<string> {
+  const out = new Set<string>();
+  const re = /^\s*answers?\s*:\s*([A-Za-z0-9 ,]+)\s*$/gim;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(raw)) !== null) {
+    const payload = m[1].replace(/[,\s]+/g, "");
+    for (const ch of payload) {
+      if (/[A-Za-z]/.test(ch)) out.add(ch.toUpperCase());
+      else if (/\d/.test(ch)) out.add(ch);
+    }
+  }
+  return out;
+}
+
+
 
 type ParsedOption = { label?: string; text: string; correct?: boolean };
-type ParsedResult = {
-  question: string;
-  options: ParsedOption[];
-  multipleCorrect: boolean;
-};
+type ParsedResult = { question: string; options: ParsedOption[] };
 
-/** Matches option prefixes like: a) / A. / 1- / • ... */
-const OPTION_PREFIX = /^(?:\(?\s*([A-Da-d1-9])\s*\)?[.)\-:]\s*|\s*[-•]\s+)/;
-
-/** Parse a pasted block into { question, options[] } with correctness hints */
+/** Parse pasted block into question + options, supporting multi-correct. */
 function parsePastedBlock(rawText: string): ParsedResult | null {
   const raw = (rawText ?? "").replace(/\r/g, "").trim();
   if (!raw) return null;
 
-  // Optional "Answer: B" line anywhere in the text
-  const explicitAnswerLetter = raw.match(/^\s*answer:\s*([A-D])\s*$/im)?.[1]?.toUpperCase();
+  const explicit = extractExplicitAnswers(raw);
 
-  // Split lines, drop empty and "Answer:" lines
+  // split lines and remove "Answer(s):" lines
   const lines = raw
     .split("\n")
     .map((l) => l.trim())
-    .filter((l) => l.length && !/^answer:/i.test(l));
+    .filter((l) => l.length && !/^\s*answers?\s*:/i.test(l));
 
   if (!lines.length) return null;
 
-  // Heuristic: first non-option line is the question
+  // First non-option line is the question; if none found, use the first line
   let qIndex = lines.findIndex((l) => !OPTION_PREFIX.test(l));
   if (qIndex < 0) qIndex = 0;
 
-  const questionText = lines[qIndex];
+  const question = lines[qIndex];
   const options: ParsedOption[] = [];
+
+  const alphaToNum = (lab: string) => {
+    const c = lab.toUpperCase().charCodeAt(0);
+    return c >= 65 && c <= 90 ? String(c - 64) : null; // A->1, B->2...
+  };
 
   for (let i = qIndex + 1; i < lines.length; i++) {
     const line = lines[i];
     if (!OPTION_PREFIX.test(line)) continue;
 
-    const [, labelRaw] = line.match(/^\(?\s*([A-Da-d1-9])/) ?? [];
+    const [, labelRaw] = line.match(/^\(?\s*([A-Za-z]|\d{1,3})/) ?? [];
     const label = labelRaw?.toString().toUpperCase();
 
-    // Strip the prefix like "a) ", "A. ", "1- ", "• "
     let textOnly = line.replace(OPTION_PREFIX, "").trim();
 
-    // Correct markers: trailing "*" or "(correct)"
+    // Inline correctness markers: trailing "*" or "(correct)"
     let correct = /\*\s*$/.test(textOnly) || /\(correct\)$/i.test(textOnly);
     textOnly = textOnly.replace(/\*\s*$|\(correct\)$/i, "").trim();
+
+    // Respect explicit answers by label or number
+    if (!correct && label && explicit.size) {
+      if (explicit.has(label)) correct = true;
+      const num = alphaToNum(label);
+      if (!correct && num && explicit.has(num)) correct = true; // A->1 mapping
+    }
 
     options.push({ label, text: textOnly, correct });
   }
 
   if (!options.length) return null;
-
-  // If no inline correct markers but have "Answer: B"
-  if (explicitAnswerLetter) {
-    const idx = options.findIndex((o) => o.label === explicitAnswerLetter);
-    if (idx >= 0) options[idx].correct = true;
-  }
-
-  const multipleCorrect = options.filter((o) => o.correct).length > 1;
-
-  return {
-    question: questionText,
-    options,
-    multipleCorrect,
-  };
+  return { question, options };
 }
 
-/* ------------------------------ Component Types ----------------------------- */
+/* ============================== Component Types ============================ */
 
 type QuestionType = "multiple-choice" | "checkbox" | "short-answer";
 
 interface FormQuestion extends Omit<Question, "id" | "imageUrl"> {
-  id: number | string; // temp id for UI
+  id: number | string; // temp UI id
   imageFile?: File | null;
   imageUrl?: string | null;
 }
 
-/* ------------------------------- Main Component ----------------------------- */
+/* ================================ Main Form ================================ */
 
 export function QuizBuilderForm({ quiz }: { quiz?: Quiz }) {
   const router = useRouter();
@@ -146,7 +161,7 @@ export function QuizBuilderForm({ quiz }: { quiz?: Quiz }) {
         id: Date.now(),
         question: "",
         type: "multiple-choice",
-        options: ["", "", "", ""],
+        options: ["", "", "", ""], // default 4, parser can expand
         answer: "",
         imageFile: null,
         imageUrl: null,
@@ -169,7 +184,7 @@ export function QuizBuilderForm({ quiz }: { quiz?: Quiz }) {
           ? {
               ...q,
               type,
-              options: type !== "short-answer" ? q.options.length ? q.options : ["", "", "", ""] : [],
+              options: type !== "short-answer" ? (q.options.length ? q.options : ["", "", "", ""]) : [],
               answer: type === "checkbox" ? [] : "",
             }
           : q
@@ -179,21 +194,21 @@ export function QuizBuilderForm({ quiz }: { quiz?: Quiz }) {
 
   const handleOptionChange = (qId: number | string, oIndex: number, value: string) => {
     setQuestions((prev) =>
-      prev.map((q) =>
-        q.id === qId
-          ? {
-              ...q,
-              options: q.options.map((opt, i) => (i === oIndex ? value : opt)),
-              // If this option is the selected answer (by value), keep answer in sync
-              answer:
-                q.type === "multiple-choice" && q.answer === q.options[oIndex]
-                  ? value
-                  : q.type === "checkbox" && Array.isArray(q.answer)
-                  ? q.answer.map((ans) => (ans === q.options[oIndex] ? value : ans))
-                  : q.answer,
-            }
-          : q
-      )
+      prev.map((q) => {
+        if (q.id !== qId) return q;
+
+        const newOptions = q.options.map((opt, i) => (i === oIndex ? value : opt));
+
+        // Keep selected answers in sync if the edited option was selected
+        let newAnswer: Question["answer"] = q.answer;
+        if (q.type === "multiple-choice" && q.answer === q.options[oIndex]) {
+          newAnswer = value;
+        } else if (q.type === "checkbox" && Array.isArray(q.answer)) {
+          newAnswer = q.answer.map((ans) => (ans === q.options[oIndex] ? value : ans));
+        }
+
+        return { ...q, options: newOptions, answer: newAnswer };
+      })
     );
   };
 
@@ -205,14 +220,14 @@ export function QuizBuilderForm({ quiz }: { quiz?: Quiz }) {
     setQuestions((prev) =>
       prev.map((q) => {
         if (q.id !== qId) return q;
+        const removed = q.options[oIndex];
         const newOptions = q.options.filter((_, i) => i !== oIndex);
 
-        // Clean answer if the removed option was selected
         let newAnswer: Question["answer"] = q.answer;
-        if (q.type === "multiple-choice" && q.answer === q.options[oIndex]) {
+        if (q.type === "multiple-choice" && q.answer === removed) {
           newAnswer = "";
         } else if (q.type === "checkbox" && Array.isArray(q.answer)) {
-          newAnswer = q.answer.filter((ans) => ans !== q.options[oIndex]);
+          newAnswer = q.answer.filter((ans) => ans !== removed);
         }
 
         return { ...q, options: newOptions, answer: newAnswer };
@@ -261,47 +276,103 @@ export function QuizBuilderForm({ quiz }: { quiz?: Quiz }) {
 
   /* ------------------------------ Paste Parsing ----------------------------- */
 
-  const handleQuestionPaste = (qId: number | string, e: React.ClipboardEvent<HTMLTextAreaElement>) => {
-    const pasted = e.clipboardData.getData("text/plain");
-    const parsed = parsePastedBlock(pasted);
-    if (!parsed) return; // allow normal paste if not recognized
+  const handleQuestionPaste = (
+  qId: number | string,
+  e: React.ClipboardEvent<HTMLTextAreaElement>
+) => {
+  const raw = e.clipboardData.getData("text/plain");
+  if (!raw?.trim()) return; // let normal paste happen
 
-    // We will programmatically fill; stop default paste
-    e.preventDefault();
+  const lines = raw
+    .replace(/\r/g, "")
+    .split("\n")
+    .map((l) => l.trim());
 
-    setQuestions((prev) =>
-      prev.map((q) => {
-        if (q.id !== qId) return q;
+  if (!lines.length) return;
 
-        // Determine type based on number of correct options
-        const nextType: QuestionType =
-          parsed.options.filter((o) => o.correct).length > 1 ? "checkbox" : "multiple-choice";
+  // Remove Answer/Answers lines for parsing (we still use `raw` for explicit answers)
+  const contentLines = lines.filter((l) => l.length && !/^\s*answers?\s*:/i.test(l));
 
-        // Build options array
-        const optionTexts = parsed.options.map((o) => o.text);
+  // Build full question from consecutive non-option lines at the top
+  const questionLines: string[] = [];
+  let i = 0;
+  while (i < contentLines.length && !OPTION_PREFIX.test(contentLines[i])) {
+    questionLines.push(contentLines[i]);
+    i++;
+  }
+  const fullQuestion = questionLines.join(" ").replace(/\s+/g, " ").trim();
 
-        // Compute "answer" based on type
-        let nextAnswer: Question["answer"] = "";
-        if (nextType === "multiple-choice") {
-          const idx = parsed.options.findIndex((o) => o.correct);
-          nextAnswer = idx >= 0 ? optionTexts[idx] : "";
-        } else if (nextType === "checkbox") {
-          nextAnswer = parsed.options.reduce<string[]>((acc, o) => {
-            if (o.correct) acc.push(o.text);
-            return acc;
-          }, []);
-        }
-
-        return {
-          ...q,
-          question: parsed.question,
-          options: optionTexts.length ? optionTexts : q.options,
-          type: nextType,
-          answer: nextAnswer,
-        };
-      })
-    );
+  // Parse options
+  const explicit = extractExplicitAnswers(raw);
+  const alphaToNum = (lab: string) => {
+    const c = lab.toUpperCase().charCodeAt(0);
+    return c >= 65 && c <= 90 ? String(c - 64) : null; // A->1
   };
+
+  const options: { text: string; correct?: boolean }[] = [];
+  for (; i < contentLines.length; i++) {
+    const line = contentLines[i];
+    if (!OPTION_PREFIX.test(line)) continue;
+
+    const [, labelRaw] = line.match(/^\(?\s*([A-Za-z]|\d{1,3})/) ?? [];
+    const label = labelRaw?.toString().toUpperCase();
+
+    let text = line.replace(OPTION_PREFIX, "").trim();
+
+    // Inline correctness markers
+    let correct = /\*\s*$/.test(text) || /\(correct\)$/i.test(text);
+    text = text.replace(/\*\s*$|\(correct\)$/i, "").trim();
+
+    // Respect "Answer(s):" hints
+    if (!correct && label && explicit.size) {
+      if (explicit.has(label)) correct = true;
+      const num = alphaToNum(label);
+      if (!correct && num && explicit.has(num)) correct = true;
+    }
+
+    options.push({ text, correct });
+  }
+
+  // If we couldn’t parse anything useful, let the browser paste normally
+  if (!fullQuestion && options.length === 0) return;
+
+  // We are going to fill fields, block default paste now
+  e.preventDefault();
+
+  // If only a question was found, still set it
+  if (fullQuestion && options.length === 0) {
+    setQuestions((prev) => prev.map((q) => (q.id === qId ? { ...q, question: fullQuestion } : q)));
+    return;
+  }
+
+  // Build answers + type
+  const optionTexts = options.map((o) => o.text);
+  const correctIdxs = options.map((o, idx) => (o.correct ? idx : -1)).filter((n) => n >= 0);
+  const nextType: "multiple-choice" | "checkbox" =
+    correctIdxs.length > 1 ? "checkbox" : "multiple-choice";
+
+  let nextAnswer: Question["answer"] = "";
+  if (nextType === "multiple-choice") {
+    nextAnswer = correctIdxs.length === 1 ? optionTexts[correctIdxs[0]] : "";
+  } else {
+    nextAnswer = correctIdxs.map((ci) => optionTexts[ci]); // array for checkbox
+  }
+
+  setQuestions((prev) =>
+    prev.map((q) =>
+      q.id === qId
+        ? {
+            ...q,
+            question: fullQuestion || q.question,
+            options: optionTexts,
+            type: nextType,
+            answer: nextAnswer,
+          }
+        : q
+    )
+  );
+};
+
 
   /* --------------------------------- Submit -------------------------------- */
 
@@ -379,7 +450,7 @@ export function QuizBuilderForm({ quiz }: { quiz?: Quiz }) {
     }
   };
 
-  /* ---------------------------- Render helpers ----------------------------- */
+  /* ---------------------------- Render Answers UI --------------------------- */
 
   const renderAnswerInput = (q: FormQuestion) => {
     switch (q.type) {
@@ -507,20 +578,18 @@ export function QuizBuilderForm({ quiz }: { quiz?: Quiz }) {
           <div className="flex justify-between items-start gap-4">
             <div className="flex-grow space-y-2">
               <Label htmlFor={`question-${q.id}`}>Question {qIndex + 1}</Label>
-
-              {/* Textarea to allow multi-line paste (question + options) */}
               <Textarea
                 id={`question-${q.id}`}
                 value={q.question}
                 onChange={(e) => handleQuestionChange(q.id, e.target.value)}
                 onPaste={(e) => handleQuestionPaste(q.id, e)}
-                placeholder={`Enter the question`}
+                placeholder={`Paste the whole question`}
                 rows={3}
                 required
               />
               <p className="text-xs text-muted-foreground">
-                Tip: Use formats like “a) … / A. … / 1- …”. Mark correct with “*”, “(correct)” or a final line “Answer: B”.
-                If multiple are marked, the type switches to Checkboxes automatically.
+                Tip: Use “a) … / A. … / 1- …”. Mark correct with “*”, “(correct)” or “Answer: A,C”.
+                Multiple correct → switches to Checkboxes automatically. Any number of options is supported.
               </p>
             </div>
 
