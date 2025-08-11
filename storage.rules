@@ -1,0 +1,12 @@
+rules_version = '2';
+
+// DANGER: Allow public read/write access to all files.
+// This is for development only and should be secured before production.
+service firebase.storage {
+  match /b/{bucket}/o {
+    // This rule allows anyone to read, write, and delete any file.
+    match /{allPaths=**} {
+      allow read, write;
+    }
+  }
+}
