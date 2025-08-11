@@ -1,47 +1,51 @@
+// src/lib/firebaseAdmin.ts
+import "server-only";
+import { getApps, initializeApp, cert, getApp, App } from "firebase-admin/app";
+import { getAuth as _getAuth } from "firebase-admin/auth";
+import { getFirestore as _getFirestore } from "firebase-admin/firestore";
 
-import { initializeApp, getApps, App, cert } from 'firebase-admin/app';
-import { getAuth } from 'firebase-admin/auth';
-import { getFirestore } from 'firebase-admin/firestore';
+let cachedApp: App | null = null;
 
-let serviceAccount: any;
-
-try {
-  if (process.env.FIREBASE_SERVICE_ACCOUNT_KEY) {
-    serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT_KEY);
-  } else {
-    // Fallback for environments where the full key isn't set as a single JSON string
-    serviceAccount = {
-      projectId: process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID,
-      clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
-      // The `replace` is crucial for keys stored in some environments
-      privateKey: (process.env.FIREBASE_PRIVATE_KEY || '').replace(/\\n/g, '\n'),
-    };
+function readCreds() {
+  // Prefer a single JSON secret if you have it
+  const json = process.env.FIREBASE_SERVICE_ACCOUNT_KEY;
+  if (json) {
+    try {
+      return JSON.parse(json);
+    } catch (e) {
+      console.error("Failed to parse FIREBASE_SERVICE_ACCOUNT_KEY:", e);
+    }
   }
-} catch (error) {
-  console.error("Failed to parse FIREBASE_SERVICE_ACCOUNT_KEY:", error);
-  serviceAccount = {}; // Ensure serviceAccount is an object to avoid further errors
+  // Fallback to discrete vars
+  const projectId = process.env.FIREBASE_PROJECT_ID;
+  const clientEmail = process.env.FIREBASE_CLIENT_EMAIL;
+  const privateKey = process.env.FIREBASE_PRIVATE_KEY?.replace(/\\n/g, "\n");
+
+  if (projectId && clientEmail && privateKey) {
+    return { projectId, clientEmail, privateKey };
+  }
+  return null;
 }
 
-
-// A check to ensure that the necessary properties exist before trying to initialize
-const hasCredentials = serviceAccount.privateKey && serviceAccount.clientEmail && serviceAccount.projectId;
-
-let app: App;
-
-if (getApps().length > 0) {
-    app = getApps()[0];
-} else if (hasCredentials) {
-    app = initializeApp({
-        credential: cert(serviceAccount),
-    });
-} else {
-    // If no credentials, we can't initialize the admin app.
-    // We create a dummy object for auth and db to avoid crashes on import,
-    // but server-side operations will fail.
-    console.warn("Firebase Admin SDK not initialized. Missing credentials.");
-    app = {} as App; // This is not a real app, just a placeholder
+export function getAdminApp() {
+  if (cachedApp) return cachedApp;
+  if (getApps().length) {
+    cachedApp = getApp();
+    return cachedApp;
+  }
+  const creds = readCreds();
+  if (!creds) {
+    // Defer failure until actually used
+    throw new Error("Firebase Admin credentials are missing.");
+  }
+  cachedApp = initializeApp({ credential: cert(creds as any) });
+  return cachedApp;
 }
 
-// Ensure auth and db can be imported without crashing the app, even if not initialized.
-export const auth = hasCredentials ? getAuth(app) : ({} as any);
-export const db = hasCredentials ? getFirestore(app) : ({} as any);
+export function getAdminAuth() {
+  return _getAuth(getAdminApp());
+}
+
+export function getAdminDb() {
+  return _getFirestore(getAdminApp());
+}
