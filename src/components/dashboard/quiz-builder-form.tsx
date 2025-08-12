@@ -347,30 +347,34 @@ export function QuizBuilderForm({ quiz }: { quiz?: Quiz }) {
 
   // Build answers + type
   const optionTexts = options.map((o) => o.text);
-  const correctIdxs = options.map((o, idx) => (o.correct ? idx : -1)).filter((n) => n >= 0);
-  const nextType: "multiple-choice" | "checkbox" =
-    correctIdxs.length > 1 ? "checkbox" : "multiple-choice";
+const correctIdxs = options.map((o, idx) => (o.correct ? idx : -1)).filter((n) => n >= 0);
 
-  let nextAnswer: Question["answer"] = "";
-  if (nextType === "multiple-choice") {
-    nextAnswer = correctIdxs.length === 1 ? optionTexts[correctIdxs[0]] : "";
-  } else {
-    nextAnswer = correctIdxs.map((ci) => optionTexts[ci]); // array for checkbox
-  }
+// Force checkbox if "Choose" phrase is in the question or multiple correct answers
+let nextType: "multiple-choice" | "checkbox" =
+  correctIdxs.length > 1 || /\(choose\s*\d+\)/i.test(fullQuestion)
+    ? "checkbox"
+    : "multiple-choice";
 
-  setQuestions((prev) =>
-    prev.map((q) =>
-      q.id === qId
-        ? {
-            ...q,
-            question: fullQuestion || q.question,
-            options: optionTexts,
-            type: nextType,
-            answer: nextAnswer,
-          }
-        : q
-    )
-  );
+let nextAnswer: Question["answer"] = "";
+if (nextType === "multiple-choice") {
+  nextAnswer = correctIdxs.length === 1 ? optionTexts[correctIdxs[0]] : "";
+} else {
+  nextAnswer = correctIdxs.map((ci) => optionTexts[ci]); // array for checkbox
+}
+
+setQuestions((prev) =>
+  prev.map((q) =>
+    q.id === qId
+      ? {
+          ...q,
+          question: fullQuestion || q.question,
+          options: optionTexts, // handles >4 automatically
+          type: nextType,
+          answer: nextAnswer,
+        }
+      : q
+  )
+);
 };
 
 
