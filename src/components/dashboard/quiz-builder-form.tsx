@@ -33,15 +33,13 @@ import { uploadQuizImage } from "@/services/storage-service";
 
 /* ============================= Parser Utilities ============================ */
 
-// Accepts A-Z or 1..999 prefixes, and bullets like "-" or "•"
-// Require a real delimiter after the label, so normal sentences won't match.
-// Supports "(A) ", "A) ", "A.", "A:", "A-", "A–", "A—", with or without space after.
-// Also supports bullets "-" and "•".
-const OPTION_PREFIX =
-  /^\s*(?:[-•]\s+|\(?\s*([A-Za-z]|\d{1,3})\s*\)?[.)\:–—-]\s*)/;
+/**
+ * Stricter label prefix for real options (NO bullets). Examples:
+ * A)  A.  A:  A-  (A)   1)  12.  99:
+ */
+const LBL_OPTION_PREFIX = /^\s*\(?\s*([A-Za-z]|\d{1,3})\s*\)?[.)\:–—-]\s*/;
 
-
-// Extracts e.g. "Answer: A,C" / "Answers: 1,3"
+/** Extracts e.g. "Answer: A,C", "Answers: 1,3", "Answer: CD" */
 function extractExplicitAnswers(raw: string): Set<string> {
   const out = new Set<string>();
   const re = /^\s*answers?\s*:\s*([A-Za-z0-9 ,]+)\s*$/gim;
@@ -56,56 +54,57 @@ function extractExplicitAnswers(raw: string): Set<string> {
   return out;
 }
 
-
-
 type ParsedOption = { label?: string; text: string; correct?: boolean };
 type ParsedResult = { question: string; options: ParsedOption[] };
 
-/** Parse pasted block into question + options, supporting multi-correct. */
+/** Parse ONE question block (single paste). */
 function parsePastedBlock(rawText: string): ParsedResult | null {
   const raw = (rawText ?? "").replace(/\r/g, "").trim();
   if (!raw) return null;
 
   const explicit = extractExplicitAnswers(raw);
 
-  // split lines and remove "Answer(s):" lines
   const lines = raw
     .split("\n")
     .map((l) => l.trim())
-    .filter((l) => l.length && !/^\s*answers?\s*:/i.test(l));
+    .filter((l) => l.length && !/^\s*answers?\s*:/i.test(l) && !/^question\s*:\s*\d+/i.test(l));
 
   if (!lines.length) return null;
 
-  // First non-option line is the question; if none found, use the first line
-  let qIndex = lines.findIndex((l) => !OPTION_PREFIX.test(l));
-  if (qIndex < 0) qIndex = 0;
+  // Question = all consecutive non-option lines at the top
+  const questionLines: string[] = [];
+  let i = 0;
+  while (i < lines.length && !LBL_OPTION_PREFIX.test(lines[i])) {
+    questionLines.push(lines[i]);
+    i++;
+  }
+  const question = questionLines.join(" ").replace(/\s+/g, " ").trim();
+  if (!question) return null;
 
-  const question = lines[qIndex];
   const options: ParsedOption[] = [];
-
   const alphaToNum = (lab: string) => {
     const c = lab.toUpperCase().charCodeAt(0);
-    return c >= 65 && c <= 90 ? String(c - 64) : null; // A->1, B->2...
+    return c >= 65 && c <= 90 ? String(c - 64) : null; // A->1
   };
 
-  for (let i = qIndex + 1; i < lines.length; i++) {
+  for (; i < lines.length; i++) {
     const line = lines[i];
-    if (!OPTION_PREFIX.test(line)) continue;
+    if (!LBL_OPTION_PREFIX.test(line)) continue;
 
     const [, labelRaw] = line.match(/^\(?\s*([A-Za-z]|\d{1,3})/) ?? [];
     const label = labelRaw?.toString().toUpperCase();
 
-    let textOnly = line.replace(OPTION_PREFIX, "").trim();
+    let textOnly = line.replace(LBL_OPTION_PREFIX, "").trim();
 
-    // Inline correctness markers: trailing "*" or "(correct)"
+    // Inline correctness
     let correct = /\*\s*$/.test(textOnly) || /\(correct\)$/i.test(textOnly);
     textOnly = textOnly.replace(/\*\s*$|\(correct\)$/i, "").trim();
 
-    // Respect explicit answers by label or number
+    // Respect explicit answers
     if (!correct && label && explicit.size) {
       if (explicit.has(label)) correct = true;
       const num = alphaToNum(label);
-      if (!correct && num && explicit.has(num)) correct = true; // A->1 mapping
+      if (!correct && num && explicit.has(num)) correct = true;
     }
 
     options.push({ label, text: textOnly, correct });
@@ -115,12 +114,45 @@ function parsePastedBlock(rawText: string): ParsedResult | null {
   return { question, options };
 }
 
+/** Split a giant paste into blocks; close a block when encountering an Answer line. */
+function splitIntoBlocks(raw: string): string[] {
+  const lines = raw.replace(/\r/g, "").split("\n").map((l) => l.trim());
+
+  const blocks: string[] = [];
+  let buf: string[] = [];
+  let sawOption = false;
+
+  for (const line of lines) {
+    if (!line) continue;
+
+    // Ignore "Question: 301" noise
+    if (/^question\s*:\s*\d+/i.test(line)) continue;
+
+    buf.push(line);
+
+    if (LBL_OPTION_PREFIX.test(line)) sawOption = true;
+
+    if (/^\s*answers?\s*:/i.test(line)) {
+      if (sawOption) blocks.push(buf.join("\n"));
+      buf = [];
+      sawOption = false;
+    }
+  }
+
+  // If last chunk had options but no explicit Answer line, keep it too
+  if (buf.length && buf.some((l) => LBL_OPTION_PREFIX.test(l))) {
+    blocks.push(buf.join("\n"));
+  }
+
+  return blocks;
+}
+
 /* ============================== Component Types ============================ */
 
 type QuestionType = "multiple-choice" | "checkbox" | "short-answer";
 
 interface FormQuestion extends Omit<Question, "id" | "imageUrl"> {
-  id: number | string; // temp UI id
+  id: number | string;
   imageFile?: File | null;
   imageUrl?: string | null;
 }
@@ -139,6 +171,7 @@ export function QuizBuilderForm({ quiz }: { quiz?: Quiz }) {
   const [shuffleAnswers, setShuffleAnswers] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
+  const [isImporting, setIsImporting] = useState(false);
 
   const isEditMode = !!quiz;
 
@@ -161,7 +194,7 @@ export function QuizBuilderForm({ quiz }: { quiz?: Quiz }) {
         id: Date.now(),
         question: "",
         type: "multiple-choice",
-        options: ["", "", "", ""], // default 4, parser can expand
+        options: ["", "", "", ""],
         answer: "",
         imageFile: null,
         imageUrl: null,
@@ -196,10 +229,8 @@ export function QuizBuilderForm({ quiz }: { quiz?: Quiz }) {
     setQuestions((prev) =>
       prev.map((q) => {
         if (q.id !== qId) return q;
-
         const newOptions = q.options.map((opt, i) => (i === oIndex ? value : opt));
 
-        // Keep selected answers in sync if the edited option was selected
         let newAnswer: Question["answer"] = q.answer;
         if (q.type === "multiple-choice" && q.answer === q.options[oIndex]) {
           newAnswer = value;
@@ -239,18 +270,15 @@ export function QuizBuilderForm({ quiz }: { quiz?: Quiz }) {
     setQuestions((prev) =>
       prev.map((q) => {
         if (q.id !== qId) return q;
-
         if (q.type === "multiple-choice") {
           return { ...q, answer: value };
         }
-
         if (q.type === "checkbox") {
           const curr = Array.isArray(q.answer) ? q.answer : [];
           const exists = curr.includes(value);
           const next = exists ? curr.filter((a) => a !== value) : [...curr, value];
           return { ...q, answer: next };
         }
-
         return q;
       })
     );
@@ -274,109 +302,147 @@ export function QuizBuilderForm({ quiz }: { quiz?: Quiz }) {
     setQuestions((prev) => prev.map((q) => (q.id === qId ? { ...q, imageFile: null, imageUrl: null } : q)));
   };
 
-  /* ------------------------------ Paste Parsing ----------------------------- */
+  /* ----------------------- Single-Question Paste Parsing -------------------- */
 
   const handleQuestionPaste = (
-  qId: number | string,
-  e: React.ClipboardEvent<HTMLTextAreaElement>
-) => {
-  const raw = e.clipboardData.getData("text/plain");
-  if (!raw?.trim()) return; // let normal paste happen
+    qId: number | string,
+    e: React.ClipboardEvent<HTMLTextAreaElement>
+  ) => {
+    const raw = e.clipboardData.getData("text/plain");
+    if (!raw?.trim()) return; // let normal paste happen
 
-  const lines = raw
-    .replace(/\r/g, "")
-    .split("\n")
-    .map((l) => l.trim());
+    const parsed = parsePastedBlock(raw);
+    if (!parsed) return; // no preventDefault → normal paste
 
-  if (!lines.length) return;
+    e.preventDefault();
 
-  // Remove Answer/Answers lines for parsing (we still use `raw` for explicit answers)
-  const contentLines = lines.filter((l) => l.length && !/^\s*answers?\s*:/i.test(l));
+    const optionTexts = parsed.options.map((o) => o.text);
+    const correctIdxs = parsed.options.map((o, idx) => (o.correct ? idx : -1)).filter((n) => n >= 0);
 
-  // Build full question from consecutive non-option lines at the top
-  const questionLines: string[] = [];
-  let i = 0;
-  while (i < contentLines.length && !OPTION_PREFIX.test(contentLines[i])) {
-    questionLines.push(contentLines[i]);
-    i++;
-  }
-  const fullQuestion = questionLines.join(" ").replace(/\s+/g, " ").trim();
+    const forceCheckbox = /\(choose\s*\d+\)/i.test(parsed.question);
+    const nextType: QuestionType =
+      forceCheckbox || correctIdxs.length > 1 ? "checkbox" : "multiple-choice";
 
-  // Parse options
-  const explicit = extractExplicitAnswers(raw);
-  const alphaToNum = (lab: string) => {
-    const c = lab.toUpperCase().charCodeAt(0);
-    return c >= 65 && c <= 90 ? String(c - 64) : null; // A->1
-  };
-
-  const options: { text: string; correct?: boolean }[] = [];
-  for (; i < contentLines.length; i++) {
-    const line = contentLines[i];
-    if (!OPTION_PREFIX.test(line)) continue;
-
-    const [, labelRaw] = line.match(/^\(?\s*([A-Za-z]|\d{1,3})/) ?? [];
-    const label = labelRaw?.toString().toUpperCase();
-
-    let text = line.replace(OPTION_PREFIX, "").trim();
-
-    // Inline correctness markers
-    let correct = /\*\s*$/.test(text) || /\(correct\)$/i.test(text);
-    text = text.replace(/\*\s*$|\(correct\)$/i, "").trim();
-
-    // Respect "Answer(s):" hints
-    if (!correct && label && explicit.size) {
-      if (explicit.has(label)) correct = true;
-      const num = alphaToNum(label);
-      if (!correct && num && explicit.has(num)) correct = true;
+    let nextAnswer: Question["answer"] = "";
+    if (nextType === "multiple-choice") {
+      nextAnswer = correctIdxs.length === 1 ? optionTexts[correctIdxs[0]] : "";
+    } else {
+      nextAnswer = correctIdxs.map((ci) => optionTexts[ci]);
     }
 
-    options.push({ text, correct });
-  }
+    setQuestions((prev) =>
+      prev.map((q) =>
+        q.id === qId
+          ? { ...q, question: parsed.question, options: optionTexts, type: nextType, answer: nextAnswer }
+          : q
+      )
+    );
+  };
 
-  // If we couldn’t parse anything useful, let the browser paste normally
-  if (!fullQuestion && options.length === 0) return;
+  /* ----------------------------- BULK Paste Handler ------------------------- */
 
-  // We are going to fill fields, block default paste now
-  e.preventDefault();
+  const beginBulkImport = (raw: string) => {
+    setIsImporting(true);
+    // Yield to paint the spinner, then parse
+    setTimeout(() => {
+      try {
+        const blocks = splitIntoBlocks(raw);
+        const created: FormQuestion[] = [];
 
-  // If only a question was found, still set it
-  if (fullQuestion && options.length === 0) {
-    setQuestions((prev) => prev.map((q) => (q.id === qId ? { ...q, question: fullQuestion } : q)));
-    return;
-  }
+        blocks.forEach((block, idx) => {
+          const parsed = parsePastedBlock(block);
+          if (!parsed) return;
 
-  // Build answers + type
-  const optionTexts = options.map((o) => o.text);
-const correctIdxs = options.map((o, idx) => (o.correct ? idx : -1)).filter((n) => n >= 0);
+          const optionTexts = parsed.options.map((o) => o.text);
+          const correctIdxs = parsed.options.map((o, i) => (o.correct ? i : -1)).filter((i) => i >= 0);
 
-// Force checkbox if "Choose" phrase is in the question or multiple correct answers
-let nextType: "multiple-choice" | "checkbox" =
-  correctIdxs.length > 1 || /\(choose\s*\d+\)/i.test(fullQuestion)
-    ? "checkbox"
-    : "multiple-choice";
+          const forceCheckbox = /\(choose\s*\d+\)/i.test(parsed.question);
+          const type: QuestionType =
+            forceCheckbox || correctIdxs.length > 1 ? "checkbox" : "multiple-choice";
 
-let nextAnswer: Question["answer"] = "";
-if (nextType === "multiple-choice") {
-  nextAnswer = correctIdxs.length === 1 ? optionTexts[correctIdxs[0]] : "";
-} else {
-  nextAnswer = correctIdxs.map((ci) => optionTexts[ci]); // array for checkbox
-}
+          const answer: Question["answer"] =
+            type === "multiple-choice"
+              ? correctIdxs.length === 1
+                ? optionTexts[correctIdxs[0]]
+                : ""
+              : correctIdxs.map((ci) => optionTexts[ci]);
 
-setQuestions((prev) =>
-  prev.map((q) =>
-    q.id === qId
-      ? {
-          ...q,
-          question: fullQuestion || q.question,
-          options: optionTexts, // handles >4 automatically
-          type: nextType,
-          answer: nextAnswer,
+          created.push({
+            id: `${Date.now()}-${idx}-${Math.random()}`,
+            question: parsed.question,
+            type,
+            options: optionTexts,
+            answer,
+            imageFile: null,
+            imageUrl: null,
+          });
+        });
+
+        if (created.length) {
+          setQuestions((prev) => [...prev, ...created]);
+          toast({
+            title: `Imported ${created.length} question${created.length > 1 ? "s" : ""}`,
+            description: "Bulk paste parsed successfully.",
+          });
+        } else {
+          toast({
+            title: "No questions detected",
+            description: "Ensure each question has options and an Answer line (e.g., Answer: D).",
+            variant: "destructive",
+          });
         }
-      : q
-  )
-);
-};
+      } finally {
+        setIsImporting(false);
+      }
+    }, 0);
+  };
 
+  const handleBulkPaste = (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
+    const raw = e.clipboardData.getData("text/plain");
+    if (!raw?.trim()) return;
+    e.preventDefault();
+    beginBulkImport(raw);
+  };
+
+  /* ---------------------- Normalize before saving (FIX) --------------------- */
+
+  const validateAndNormalize = (qs: Question[]) => {
+    const normalized: Question[] = [];
+    let skipped = 0;
+
+    for (const q of qs) {
+      const question = (q.question || "").trim();
+      const options = (q.options || [])
+        .map((o) => (o || "").trim())
+        .filter(Boolean);
+
+      if (!question) {
+        skipped++;
+        continue;
+      }
+
+      // Normalize answer according to type
+      let answer: Question["answer"] = q.answer;
+
+      if (q.type === "multiple-choice") {
+        if (Array.isArray(answer)) answer = answer[0] ?? "";
+        if (typeof answer !== "string" || !options.includes(answer)) {
+          answer = ""; // no invalid value
+        }
+      } else if (q.type === "checkbox") {
+        if (!Array.isArray(answer)) {
+          answer = typeof answer === "string" && answer ? [answer] : [];
+        }
+        answer = (answer as string[]).filter((a) => options.includes(a));
+      } else if (q.type === "short-answer") {
+        answer = "";
+      }
+
+      normalized.push({ ...q, question, options, answer });
+    }
+
+    return { normalized, skipped };
+  };
 
   /* --------------------------------- Submit -------------------------------- */
 
@@ -385,7 +451,7 @@ setQuestions((prev) =>
     setIsSaving(true);
 
     try {
-      const finalQuestions: Question[] = await Promise.all(
+      const finalQuestionsRaw: Question[] = await Promise.all(
         questions.map(async (q, index) => {
           let finalImageUrl: string | null = q.imageUrl || null;
           if (q.imageFile) {
@@ -402,10 +468,29 @@ setQuestions((prev) =>
         })
       );
 
+      const { normalized, skipped } = validateAndNormalize(finalQuestionsRaw);
+
+      if (!normalized.length) {
+        toast({
+          title: "Nothing to save",
+          description: "All questions were empty or invalid.",
+          variant: "destructive",
+        });
+        setIsSaving(false);
+        return;
+      }
+
+      if (skipped) {
+        toast({
+          title: "Some questions skipped",
+          description: `${skipped} invalid question${skipped > 1 ? "s were" : " was"} removed before saving.`,
+        });
+      }
+
       const quizData: Omit<Quiz, "id"> = {
-        title,
-        description,
-        questions: finalQuestions,
+        title: title.trim(),
+        description: (description || "").trim(),
+        questions: normalized,
         status: "Not Started",
         timeLimit: timeLimit > 0 ? timeLimit : undefined,
         shuffleQuestions,
@@ -423,11 +508,13 @@ setQuestions((prev) =>
 
       router.push("/dashboard/quizzes");
       router.refresh();
-    } catch (error) {
+    } catch (error: any) {
       console.error("Failed to save quiz:", error);
+      const message =
+        error?.message || (typeof error === "string" ? error : "Unknown error occurred.");
       toast({
         title: "Error",
-        description: "Failed to save the quiz. Please try again.",
+        description: `Failed to save the quiz: ${message}`,
         variant: "destructive",
       });
     } finally {
@@ -525,6 +612,7 @@ setQuestions((prev) =>
 
   return (
     <form onSubmit={handleSubmit} className="space-y-6">
+      {/* Title / Description */}
       <div className="space-y-2">
         <Label htmlFor="quiz-title">Quiz Title</Label>
         <Input
@@ -548,6 +636,7 @@ setQuestions((prev) =>
 
       <Separator />
 
+      {/* ======================== Quiz Settings (same place) ======================== */}
       <div className="space-y-4 rounded-lg border p-4">
         <h3 className="text-lg font-medium">Quiz Settings</h3>
         <div className="grid gap-4 md:grid-cols-2">
@@ -577,6 +666,32 @@ setQuestions((prev) =>
 
       <Separator />
 
+      {/* ============================== Bulk Paste ============================== */}
+      <div className="space-y-2 p-4 rounded-lg border bg-muted/30">
+        <div className="flex items-center justify-between">
+          <Label htmlFor="bulk-paste">Bulk Paste Questions</Label>
+          {isImporting && (
+            <span className="inline-flex items-center text-xs text-muted-foreground">
+              <Loader2 className="mr-1 h-3 w-3 animate-spin" /> Parsing…
+            </span>
+          )}
+        </div>
+        <Textarea
+          id="bulk-paste"
+          placeholder="Paste multiple questions (each ending with Answer: ...)."
+          rows={4}
+          onPaste={handleBulkPaste}
+          disabled={isImporting}
+        />
+        <p className="text-xs text-muted-foreground">
+          Use A./B./C. or 1./2./3. labels. Mark multiple correct with glued letters (CD) or commas (A,C).
+          “(Choose N)” forces checkboxes.
+        </p>
+      </div>
+
+      <Separator />
+
+      {/* ============================= Questions List ============================ */}
       {questions.map((q, qIndex) => (
         <div key={q.id} className="space-y-4 rounded-lg border p-4">
           <div className="flex justify-between items-start gap-4">
@@ -587,13 +702,13 @@ setQuestions((prev) =>
                 value={q.question}
                 onChange={(e) => handleQuestionChange(q.id, e.target.value)}
                 onPaste={(e) => handleQuestionPaste(q.id, e)}
-                placeholder={`Paste the whole question`}
+                placeholder={`Paste a single question block here (question + options + Answer: ...)`}
                 rows={3}
                 required
               />
               <p className="text-xs text-muted-foreground">
-                Tip: Use “a) … / A. … / 1- …”. Mark correct with “*”, “(correct)” or “Answer: A,C”.
-                Multiple correct → switches to Checkboxes automatically. Any number of options is supported.
+                Use “A) … / A. … / 1) …”. Mark correct with “*”, “(correct)” or “Answer: A,C”. “(Choose N)” forces
+                checkboxes. Unlimited options supported.
               </p>
             </div>
 
@@ -664,6 +779,7 @@ setQuestions((prev) =>
         <PlusCircle className="mr-2 h-4 w-4" /> Add Question
       </Button>
 
+      {/* ============================== Actions =============================== */}
       <div className="flex justify-between gap-2">
         {isEditMode && (
           <AlertDialog>
