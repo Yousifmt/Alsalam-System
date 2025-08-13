@@ -237,9 +237,9 @@ export function QuizInterface({ quizData, onTimeUpdate }: { quizData: Quiz, onTi
               Question {currentQuestionIndex + 1} of {processedQuestions.length}
             </CardDescription>
         </div>
-        <CardTitle className="pt-4 text-2xl font-headline">
-          {currentQuestion.question}
-        </CardTitle>
+        <CardTitle className="pt-4 text-2xl font-headline font-normal tracking-[0.015em]">
+  {currentQuestion.question}
+</CardTitle>
         {currentQuestion.imageUrl && (
             <div className="relative mt-4 h-64 w-full">
                 <Image src={currentQuestion.imageUrl} alt={`Question ${currentQuestionIndex + 1}`} fill style={{objectFit: "contain"}} className="rounded-md"/>

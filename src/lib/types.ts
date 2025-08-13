@@ -1,5 +1,5 @@
-
 export type QuestionType = 'multiple-choice' | 'checkbox' | 'short-answer';
+export type QuizStatus = 'Not Started' | 'In Progress' | 'Completed' | 'Draft' | 'Archived';
 
 export interface Question {
   id: string;
@@ -7,20 +7,20 @@ export interface Question {
   type: QuestionType;
   options: string[];
   // answer is a string for multiple-choice and short-answer, and a string[] for checkboxes
-  answer: string | string[]; 
+  answer: string | string[];
   imageUrl?: string | null;
 }
 
 export interface QuizResult {
-    date: number; // Timestamp of the attempt
-    score: number;
-    total: number;
-    answeredQuestions: {
-        question: string;
-        userAnswer: string | string[];
-        correctAnswer: string | string[];
-        isCorrect: boolean;
-    }[];
+  date: number; // Timestamp of the attempt
+  score: number;
+  total: number;
+  answeredQuestions: {
+    question: string;
+    userAnswer: string | string[];
+    correctAnswer: string | string[];
+    isCorrect: boolean;
+  }[];
 }
 
 export interface Quiz {
@@ -28,21 +28,21 @@ export interface Quiz {
   title: string;
   description?: string;
   questions: Question[];
-  status: 'Not Started' | 'In Progress' | 'Completed'; // Represents the student's status, not master quiz.
+  status: QuizStatus; // Works for both admin (Draft) and student
   timeLimit?: number; // in minutes
   shuffleQuestions: boolean;
   shuffleAnswers: boolean;
-  results?: QuizResult[]; // Store multiple results for a student
+  results: QuizResult[]; // Always an array, can be empty if no results yet
 }
 
 export interface UserQuiz extends Omit<Quiz, 'id'> {
-    userId: string;
-    quizId: string;
+  userId: string;
+  quizId: string;
 }
 
 export interface ManagedFile {
-    name: string;
-    size: string;
-    url: string;
-    path: string;
+  name: string;
+  size: string;
+  url: string;
+  path: string;
 }
