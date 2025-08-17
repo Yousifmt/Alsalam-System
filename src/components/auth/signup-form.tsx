@@ -15,7 +15,7 @@ import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 const auth = getAuth(app);
 
 // Keep your existing admin code logic
-const ADMIN_CODE = "123456";
+const ADMIN_pass = "sy0-701-admin";
 
 // Student code (case-insensitive). You can also set NEXT_PUBLIC_STUDENT_CODE to override.
 const STUDENT_CODE =
@@ -55,7 +55,7 @@ export function SignupForm() {
 
     // ---- Access-code checks BEFORE creating the user ----
     if (role === "admin") {
-      if (adminCode !== ADMIN_CODE) {
+      if (adminCode !== ADMIN_pass) {
         setError("Invalid admin code.");
         return;
       }
@@ -129,9 +129,9 @@ export function SignupForm() {
         <div className="space-y-2">
           <Label htmlFor="admin-code">Admin Code</Label>
           <Input
-            id="admin-code"
+            id="admin-pass"
             type="password"
-            placeholder="Enter admin code"
+            placeholder="Enter admin password"
             required
             value={adminCode}
             onChange={(e) => setAdminCode(e.target.value)}
