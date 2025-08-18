@@ -4,7 +4,8 @@ import Image from "next/image";
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { BookOpenCheck, LayoutDashboard, FileText, ClipboardList, Sparkles, LogOut, Users, Moon, Sun } from "lucide-react";
+// add BrainCircuit to the icons import
+import { BookOpenCheck, LayoutDashboard, FileText, ClipboardList, Sparkles, LogOut, Users, Moon, Sun, BrainCircuit } from "lucide-react";
 import {
   SidebarHeader,
   SidebarContent,
@@ -20,17 +21,23 @@ import { Label } from "@/components/ui/label";
 import { useLoading } from "@/context/loading-context";
 import { useEffect, useState } from "react";
 
+// add this entry to baseStudentItems
 const baseStudentItems = [
   { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
   { href: "/dashboard/quizzes", label: "Quizzes", icon: ClipboardList },
   { href: "/dashboard/files", label: "Files", icon: FileText },
+  { href: "/dashboard/questions-analyzer", label: "Al-Salam Questions Analyzer", icon: BrainCircuit }, // ← NEW
 ];
 
+
+// add this entry to baseAdminItems (so admins see it too)
 const baseAdminItems = [
-   { href: "/dashboard", label: "Dashboard", icon: Users },
-   { href: "/dashboard/quizzes", label: "Manage Quizzes", icon: ClipboardList },
-   { href: "/dashboard/files", label: "Manage Files", icon: FileText },
-]
+  { href: "/dashboard", label: "Dashboard", icon: Users },
+  { href: "/dashboard/quizzes", label: "Manage Quizzes", icon: ClipboardList },
+  { href: "/dashboard/files", label: "Manage Files", icon: FileText },
+  { href: "/dashboard/questions-analyzer", label: "Al-Salam Questions Analyzer", icon: BrainCircuit }, // ← NEW
+];
+
 
 const adminMenuItems = [
   { href: "/dashboard/ai-quiz-generator", label: "AI Quiz Generator", icon: Sparkles },
