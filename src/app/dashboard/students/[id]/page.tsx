@@ -1,11 +1,11 @@
-
+// viewing answer functionality
 "use client";
 
 import { useEffect, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { getStudent, type Student } from "@/services/user-service";
 import { getQuizzesForUser } from "@/services/quiz-service";
-import type { Quiz } from "@/lib/types";
+import type { Question, Quiz } from "@/lib/types";
 import { Loader2, ArrowLeft, BarChart, History, CheckCircle, XCircle } from "lucide-react";
 import { StudentStats } from "@/components/dashboard/student-stats";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -14,6 +14,41 @@ import Link from "next/link";
 import { Button } from "@/components/ui/button";
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 import { useLoading } from "@/context/loading-context";
+import { getQuiz } from "@/services/quiz-service";
+
+const AnswerOption = ({
+  option,
+  isUserAnswer,
+  isCorrectAnswer,
+}: {
+  option: string;
+  isUserAnswer: boolean;
+  isCorrectAnswer: boolean;
+}) => {
+  const isCorrectSelection = isUserAnswer && isCorrectAnswer;
+  const isWrongSelection = isUserAnswer && !isCorrectAnswer;
+
+  return (
+    <div className="flex items-center text-sm ml-6">
+      {isCorrectSelection ? (
+        <CheckCircle className="h-4 w-4 mr-2 text-green-500 flex-shrink-0" />
+      ) : isWrongSelection ? (
+        <XCircle className="h-4 w-4 mr-2 text-red-500 flex-shrink-0" />
+      ) : isCorrectAnswer ? (
+        <CheckCircle className="h-4 w-4 mr-2 text-green-500/50 flex-shrink-0" />
+      ) : (
+        <div className="h-4 w-4 mr-2" /> // Placeholder for alignment
+      )}
+      <span
+        className={`${
+          isUserAnswer ? "font-semibold" : ""
+        } ${isCorrectAnswer ? "text-green-700 dark:text-green-400" : ""}`}
+      >
+        {option}
+      </span>
+    </div>
+  );
+};
 
 export default function StudentDetailPage() {
     const params = useParams();
@@ -21,6 +56,7 @@ export default function StudentDetailPage() {
     
     const [student, setStudent] = useState<Student | null>(null);
     const [quizzes, setQuizzes] = useState<Quiz[]>([]);
+    const [masterQuizzes, setMasterQuizzes] = useState<Record<string, Quiz>>({});
     const [loading, setLoading] = useState(true);
     const { setIsLoading } = useLoading();
     const router = useRouter();
@@ -37,7 +73,19 @@ export default function StudentDetailPage() {
                     getQuizzesForUser(id)
                 ]);
                 setStudent(studentData);
-                setQuizzes(quizzesData.filter(q => q.results && q.results.length > 0)); // Only show quizzes with attempts
+                const attemptedQuizzes = quizzesData.filter(q => q.results && q.results.length > 0);
+                setQuizzes(attemptedQuizzes);
+
+                // Fetch master quiz data for all attempted quizzes to get all options
+                const masterQuizData: Record<string, Quiz> = {};
+                for (const quiz of attemptedQuizzes) {
+                    const master = await getQuiz(quiz.id);
+                    if (master) {
+                        masterQuizData[quiz.id] = master;
+                    }
+                }
+                setMasterQuizzes(masterQuizData);
+
             } catch (error) {
                 console.error("Failed to fetch student details:", error);
                 setStudent(null);
@@ -72,6 +120,11 @@ export default function StudentDetailPage() {
                 </Button>
             </div>
         );
+    }
+    
+    const findOriginalQuestion = (quizId: string, questionText: string): Question | undefined => {
+        const masterQuiz = masterQuizzes[quizId];
+        return masterQuiz?.questions.find(q => q.question === questionText);
     }
 
     return (
@@ -122,23 +175,36 @@ export default function StudentDetailPage() {
                                                                 </div>
                                                             </AccordionTrigger>
                                                             <AccordionContent className="pt-2 pb-4 space-y-4">
-                                                                {result.answeredQuestions.map((item, qIndex) => (
-                                                                     <div key={qIndex} className={`p-3 rounded-lg border-l-4 ${item.isCorrect ? 'border-green-500 bg-green-500/10' : 'border-red-500 bg-red-500/10'}`}>
-                                                                        <div className="flex items-start justify-between">
-                                                                            <p className="font-semibold">{qIndex + 1}. {item.question}</p>
-                                                                            {item.isCorrect 
-                                                                                ? <CheckCircle className="h-5 w-5 text-green-500 flex-shrink-0 ml-2" /> 
-                                                                                : <XCircle className="h-5 w-5 text-red-500 flex-shrink-0 ml-2" />
-                                                                            }
+                                                                {result.answeredQuestions.map((item, qIndex) => {
+                                                                    const originalQuestion = findOriginalQuestion(quiz.id, item.question);
+                                                                    if (!originalQuestion) return null;
+                                                                    
+                                                                    const userAnswerArray = Array.isArray(item.userAnswer) ? item.userAnswer : [item.userAnswer];
+                                                                    const correctAnswerArray = Array.isArray(originalQuestion.answer) ? originalQuestion.answer : [originalQuestion.answer];
+
+                                                                    return (
+                                                                        <div key={qIndex} className={`p-3 rounded-lg border-l-4 ${item.isCorrect ? 'border-green-500 bg-green-500/10' : 'border-red-500 bg-red-500/10'}`}>
+                                                                            <div className="flex items-start justify-between">
+                                                                                <p className="font-semibold">{qIndex + 1}. {item.question}</p>
+                                                                                {item.isCorrect 
+                                                                                    ? <CheckCircle className="h-5 w-5 text-green-500 flex-shrink-0 ml-2" /> 
+                                                                                    : <XCircle className="h-5 w-5 text-red-500 flex-shrink-0 ml-2" />
+                                                                                }
+                                                                            </div>
+                                                                            <div className="mt-2 text-sm space-y-1">
+                                                                                <p className="font-medium">Options:</p>
+                                                                                {originalQuestion.options.map(opt => (
+                                                                                    <AnswerOption 
+                                                                                        key={opt}
+                                                                                        option={opt}
+                                                                                        isUserAnswer={userAnswerArray.includes(opt)}
+                                                                                        isCorrectAnswer={correctAnswerArray.includes(opt)}
+                                                                                    />
+                                                                                ))}
+                                                                            </div>
                                                                         </div>
-                                                                        <div className="mt-2 text-sm space-y-1 pl-1">
-                                                                            <p><strong>Answered:</strong> {Array.isArray(item.userAnswer) ? item.userAnswer.join(', ') : item.userAnswer}</p>
-                                                                            {!item.isCorrect && (
-                                                                                <p><strong>Correct:</strong> {Array.isArray(item.correctAnswer) ? item.correctAnswer.join(', ') : item.correctAnswer}</p>
-                                                                            )}
-                                                                        </div>
-                                                                    </div>
-                                                                ))}
+                                                                    );
+                                                                })}
                                                             </AccordionContent>
                                                         </AccordionItem>
                                                     ))}
@@ -162,3 +228,4 @@ export default function StudentDetailPage() {
         </div>
     );
 }
+// viewing answer functionality

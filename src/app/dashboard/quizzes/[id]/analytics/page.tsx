@@ -1,4 +1,4 @@
-
+// viewing answer functionality
 "use client";
 
 import { useEffect, useState } from "react";
@@ -173,3 +173,4 @@ export default function QuizAnalyticsPage() {
         </div>
     )
 }
+// viewing answer functionality
