@@ -512,16 +512,19 @@ export function QuizBuilderForm({ quiz }: { quiz?: Quiz }) {
 
     const { normalized, skipped } = validateAndNormalize(finalQuestionsRaw);
 
-    const payload: Omit<Quiz, "id"> = {
-      title: (title || "").trim() || "Untitled Quiz",
-      description: (description || "").trim(),
-      questions: normalized,
-      status,
-      timeLimit: timeLimit > 0 ? timeLimit : undefined,
-      shuffleQuestions,
-      shuffleAnswers,
-      results: quiz?.results || [],
-    };
+    
+// inside buildFinalPayload(status)
+const payload: Omit<Quiz, "id"> & { archived?: boolean } = {
+  title: (title || "").trim() || "Untitled Quiz",
+  description: (description || "").trim(),
+  questions: normalized,
+  status,
+  archived: String(status).toLowerCase() === "archived", // 👈 add this line
+  timeLimit: timeLimit > 0 ? timeLimit : undefined,
+  shuffleQuestions,
+  shuffleAnswers,
+  results: quiz?.results || [],
+};
 
     return { payload, skipped };
   };
@@ -547,16 +550,19 @@ export function QuizBuilderForm({ quiz }: { quiz?: Quiz }) {
 
     const { normalized } = validateAndNormalize(draftQuestions);
 
-    const payload: Omit<Quiz, "id"> = {
-      title: (title || "").trim() || "Untitled Quiz",
-      description: (description || "").trim(),
-      questions: normalized,
-      status: "Draft" as any,
-      timeLimit: timeLimit > 0 ? timeLimit : undefined,
-      shuffleQuestions,
-      shuffleAnswers,
-      results: quiz?.results || [],
-    };
+    // inside buildDraftPayload()
+const payload: Omit<Quiz, "id"> & { archived?: boolean } = {
+  title: (title || "").trim() || "Untitled Quiz",
+  description: (description || "").trim(),
+  questions: normalized,
+  status: "Draft" as any,
+  archived: false, // 👈 add this line
+  timeLimit: timeLimit > 0 ? timeLimit : undefined,
+  shuffleQuestions,
+  shuffleAnswers,
+  results: quiz?.results || [],
+};
+
     return payload;
   };
 
