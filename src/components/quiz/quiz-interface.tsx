@@ -65,10 +65,10 @@ export function QuizInterface({ quizData, onTimeUpdate, isPractice }: { quizData
     return map;
   }, [quizData.questions]);
 
-  const { wrongAnswerIndices, currentWrongIndex } = useMemo(() => {
-    if (!isGraded) return { wrongAnswerIndices: [], currentWrongIndex: -1 };
-    
-    const indices = processedQuestions
+  // Build wrong indices (relative to processedQuestions) after grading
+  const wrongAnswerIndices = useMemo(() => {
+    if (!isGraded) return [] as number[];
+    return processedQuestions
       .map((q, index) => {
         const originalQuestion = originalQuestionsMap.get(q.id);
         if (!originalQuestion) return { index, isCorrect: true };
@@ -78,7 +78,9 @@ export function QuizInterface({ quizData, onTimeUpdate, isPractice }: { quizData
         if (originalQuestion.type === 'checkbox') {
           const correctAnswers = (originalQuestion.answer as string[]).sort();
           const studentAnswers = (userAnswer as string[] || []).sort();
-          isCorrect = correctAnswers.length === studentAnswers.length && correctAnswers.every((val, i) => val === studentAnswers[i]);
+          isCorrect =
+            correctAnswers.length === studentAnswers.length &&
+            correctAnswers.every((val, i) => val === studentAnswers[i]);
         } else {
           isCorrect = userAnswer === originalQuestion.answer;
         }
@@ -86,11 +88,25 @@ export function QuizInterface({ quizData, onTimeUpdate, isPractice }: { quizData
       })
       .filter(item => !item.isCorrect)
       .map(item => item.index);
-    
-    const wrongIndex = indices.indexOf(currentQuestionIndex);
+  }, [answers, isGraded, processedQuestions, originalQuestionsMap]);
 
-    return { wrongAnswerIndices: indices, currentWrongIndex: wrongIndex };
-  }, [answers, isGraded, processedQuestions, originalQuestionsMap, currentQuestionIndex]);
+  // Edge flags
+  const isAtFirst = currentQuestionIndex === 0;
+  const isAtLast  = currentQuestionIndex === processedQuestions.length - 1;
+
+  // Is there any wrong BEFORE/AFTER current position?
+  const anyWrongBefore = useMemo(
+    () => wrongAnswerIndices.some(i => i < currentQuestionIndex),
+    [wrongAnswerIndices, currentQuestionIndex]
+  );
+  const anyWrongAfter = useMemo(
+    () => wrongAnswerIndices.some(i => i > currentQuestionIndex),
+    [wrongAnswerIndices, currentQuestionIndex]
+  );
+
+  // Disable rules exactly as requested
+  const prevWrongDisabled = isAtFirst || !anyWrongBefore;
+  const nextWrongDisabled = isAtLast || !anyWrongAfter;
 
   useEffect(() => {
     if (timeLeft === null || role === 'admin' || isPractice) return;
@@ -160,7 +176,9 @@ export function QuizInterface({ quizData, onTimeUpdate, isPractice }: { quizData
       if (originalQuestion.type === 'checkbox') {
         const correctAnswers = (originalQuestion.answer as string[]).sort();
         const studentAnswers = (userAnswer as string[] || []).sort();
-        isCorrect = correctAnswers.length === studentAnswers.length && correctAnswers.every((val, i) => val === studentAnswers[i]);
+        isCorrect =
+          correctAnswers.length === studentAnswers.length &&
+          correctAnswers.every((val, i) => val === studentAnswers[i]);
       } else {
         isCorrect = userAnswer === originalQuestion.answer;
       }
@@ -170,15 +188,20 @@ export function QuizInterface({ quizData, onTimeUpdate, isPractice }: { quizData
     if (!isGraded) setIsGraded(true);
   };
 
+  // Jump to nearest wrong BEFORE or AFTER current index
   const navigateWrongAnswers = (direction: 'next' | 'prev') => {
     if (wrongAnswerIndices.length === 0) return;
-    if (direction === 'next') {
-      const nextIndex = currentWrongIndex + 1 < wrongAnswerIndices.length ? wrongAnswerIndices[currentWrongIndex + 1] : undefined;
-      if (nextIndex !== undefined) setCurrentQuestionIndex(nextIndex);
-    } else {
-      const prevIndex = currentWrongIndex - 1 >= 0 ? wrongAnswerIndices[currentWrongIndex - 1] : undefined;
-      if (prevIndex !== undefined) setCurrentQuestionIndex(prevIndex);
+
+    if (direction === 'prev') {
+      // largest wrong index that is < currentQuestionIndex
+      const prevWrong = [...wrongAnswerIndices].filter(i => i < currentQuestionIndex).pop();
+      if (prevWrong !== undefined) setCurrentQuestionIndex(prevWrong);
+      return;
     }
+
+    // direction === 'next'
+    const nextWrong = wrongAnswerIndices.find(i => i > currentQuestionIndex);
+    if (nextWrong !== undefined) setCurrentQuestionIndex(nextWrong);
   };
 
   const handleSubmit = async (timeUp = false) => {
@@ -201,7 +224,9 @@ export function QuizInterface({ quizData, onTimeUpdate, isPractice }: { quizData
       if (originalQuestion.type === 'checkbox') {
         const correctAnswers = (originalQuestion.answer as string[]).sort();
         const studentAnswers = (userAnswer as string[] || []).sort();
-        isCorrect = correctAnswers.length === studentAnswers.length && correctAnswers.every((val, i) => val === studentAnswers[i]);
+        isCorrect =
+          correctAnswers.length === studentAnswers.length &&
+          correctAnswers.every((val, i) => val === studentAnswers[i]);
       } else {
         isCorrect = userAnswer === originalQuestion.answer;
       }
@@ -247,9 +272,8 @@ export function QuizInterface({ quizData, onTimeUpdate, isPractice }: { quizData
   const currentQuestion = processedQuestions[currentQuestionIndex];
   if (!currentQuestion) return <p>Loading question...</p>;
 
-  // NEW: helper so inputs stay enabled in practice after grading
+  // Inputs enabled in Practice Mode even after grading; locked otherwise
   const inputsDisabled = useMemo(() => {
-    // Disable for admins, and for graded state ONLY in real quizzes
     return role === 'admin' || (!isPractice && isGraded);
   }, [role, isPractice, isGraded]);
 
@@ -396,7 +420,7 @@ export function QuizInterface({ quizData, onTimeUpdate, isPractice }: { quizData
             <Button
               variant="outline"
               onClick={() => navigateWrongAnswers('prev')}
-              disabled={currentWrongIndex <= 0}
+              disabled={prevWrongDisabled}
             >
               Prev Wrong
             </Button>
@@ -440,7 +464,7 @@ export function QuizInterface({ quizData, onTimeUpdate, isPractice }: { quizData
                 <Button
                   variant="outline"
                   onClick={() => navigateWrongAnswers('next')}
-                  disabled={currentWrongIndex >= wrongAnswerIndices.length - 1}
+                  disabled={nextWrongDisabled}
                 >
                   Next Wrong
                 </Button>
