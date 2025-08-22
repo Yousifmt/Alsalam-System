@@ -1,17 +1,19 @@
+
 // viewing answer functionality
 "use client";
 
 import { useEffect, useState } from "react";
-import { useParams, useRouter } from "next/navigation";
+import { useParams, useRouter, useSearchParams } from "next/navigation";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle, CardFooter } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { CheckCircle, XCircle, ArrowLeft, RefreshCw, Loader2 } from "lucide-react";
+import { CheckCircle, XCircle, ArrowLeft, RefreshCw, Loader2, Beaker } from "lucide-react";
 import type { Quiz, QuizResult, Question } from "@/lib/types";
 import Link from "next/link";
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 import { Badge } from "@/components/ui/badge";
 import { useAuth } from "@/context/auth-context";
-import { getQuizForUser, getQuiz } from "@/services/quiz-service";
+import { getQuizForUser, getQuiz, getLatestPracticeAttempt } from "@/services/quiz-service";
+import { Alert, AlertTitle, AlertDescription } from "@/components/ui/alert";
 
 const AnswerOption = ({
   option,
@@ -51,8 +53,11 @@ const AnswerOption = ({
 export default function ResultsPage() {
     const router = useRouter();
     const params = useParams();
+    const searchParams = useSearchParams();
     const { user } = useAuth();
     const id = params.id as string;
+    const fromPractice = searchParams.get('practice') === 'true';
+
     const [quiz, setQuiz] = useState<Quiz | null>(null);
     const [masterQuiz, setMasterQuiz] = useState<Quiz | null>(null);
     const [latestResult, setLatestResult] = useState<QuizResult | null>(null);
@@ -60,27 +65,38 @@ export default function ResultsPage() {
     const [isNavigating, setIsNavigating] = useState<string | null>(null);
 
     useEffect(() => {
-        if (id && user) {
-            Promise.all([
-                getQuizForUser(id, user.uid),
-                getQuiz(id) // fetch the master quiz for all options
-            ])
-            .then(([currentQuiz, masterQuizData]) => {
-                if (currentQuiz) {
+        if (!id || !user) {
+            setLoading(false);
+            return;
+        }
+
+        const fetchResults = async () => {
+            try {
+                const masterQuizData = await getQuiz(id);
+                setMasterQuiz(masterQuizData);
+
+                if (fromPractice) {
+                    const practiceAttempt = await getLatestPracticeAttempt(id, user.uid);
+                    setLatestResult(practiceAttempt);
+                    // For practice, we don't need the full user quiz record, just the master quiz
+                    setQuiz(masterQuizData);
+                } else {
+                    const currentQuiz = await getQuizForUser(id, user.uid);
                     setQuiz(currentQuiz);
-                    setMasterQuiz(masterQuizData);
-                    if (currentQuiz.results && currentQuiz.results.length > 0) {
+                    if (currentQuiz && currentQuiz.results && currentQuiz.results.length > 0) {
                         const sortedResults = [...currentQuiz.results].sort((a, b) => b.date - a.date);
                         setLatestResult(sortedResults[0]);
                     }
                 }
-            })
-            .catch(err => console.error("Failed to load quiz results", err))
-            .finally(() => setLoading(false));
-        } else {
-             setLoading(false);
-        }
-    }, [id, user]);
+            } catch (err) {
+                console.error("Failed to load quiz results", err);
+            } finally {
+                setLoading(false);
+            }
+        };
+
+        fetchResults();
+    }, [id, user, fromPractice]);
 
     const handleNavigation = (path: string, type: 'retake' | 'back') => {
         setIsNavigating(type);
@@ -95,7 +111,7 @@ export default function ResultsPage() {
         return <div className="flex min-h-screen items-center justify-center"><Loader2 className="h-8 w-8 animate-spin" /> <p className="ml-2">Loading results...</p></div>;
     }
 
-    if (!quiz || !latestResult || !masterQuiz) {
+    if (!masterQuiz || !latestResult) {
         return (
             <div className="flex min-h-screen items-center justify-center bg-secondary">
                 <Card className="w-full max-w-md text-center">
@@ -113,9 +129,9 @@ export default function ResultsPage() {
         );
     }
 
-    const { title, results } = quiz;
+    const { title } = masterQuiz;
     const percentage = Math.round((latestResult.score / latestResult.total) * 100);
-    const allResultsSorted = results ? [...results].sort((a, b) => b.date - a.date) : [];
+    const allResultsSorted = fromPractice ? [latestResult] : (quiz?.results ? [...quiz.results].sort((a, b) => b.date - a.date) : []);
 
     return (
         <div className="min-h-screen bg-secondary p-4 md:p-8">
@@ -127,6 +143,15 @@ export default function ResultsPage() {
                         <CardDescription>Great job on completing the quiz!</CardDescription>
                     </CardHeader>
                     <CardContent className="space-y-8 pt-6">
+                        {fromPractice && (
+                             <Alert variant="default" className="bg-blue-50 border-blue-200 dark:bg-blue-950 dark:border-blue-800">
+                                <Beaker className="h-4 w-4 text-blue-500" />
+                                <AlertTitle className="text-blue-800 dark:text-blue-300">Practice Mode Results</AlertTitle>
+                                <AlertDescription className="text-blue-700 dark:text-blue-400">
+                                    You are viewing the results of a practice attempt. This score has not been saved to your official record.
+                                </AlertDescription>
+                            </Alert>
+                        )}
                         <div>
                             <h2 className="text-xl font-bold mb-4 font-headline text-center">Latest Attempt Score</h2>
                             <div className="text-center p-8 bg-primary/10 rounded-lg">
@@ -194,7 +219,7 @@ export default function ResultsPage() {
                        <Button variant="outline" onClick={() => handleNavigation('/dashboard/quizzes', 'back')} disabled={!!isNavigating}>
                            {isNavigating === 'back' ? <Loader2 className="mr-2 h-4 w-4 animate-spin"/> : <ArrowLeft className="mr-2"/>} Back to Quizzes
                        </Button>
-                       <Button onClick={() => handleNavigation(`/quiz/${id}`, 'retake')} disabled={!!isNavigating}>
+                       <Button onClick={() => handleNavigation(`/quiz/${id}/start`, 'retake')} disabled={!!isNavigating}>
                             {isNavigating === 'retake' ? <Loader2 className="mr-2 h-4 w-4 animate-spin"/> : <RefreshCw className="mr-2"/>} Retake Quiz
                        </Button>
                     </CardFooter>

@@ -1,4 +1,5 @@
 
+
 import { db } from "@/lib/firebase";
 import {
   collection,
@@ -15,6 +16,7 @@ import {
   where
 } from "firebase/firestore";
 import type { Quiz, QuizResult } from "@/lib/types";
+import { getStudents } from "./user-service";
 
 const quizzesCollection = collection(db, "quizzes");
 
@@ -38,11 +40,6 @@ export async function deleteQuiz(id: string): Promise<void> {
     // For a production app, a Firebase Function would be needed to clean up results.
 }
 
-// add near the other exports
-export async function updateQuizOrder(id: string, order: number): Promise<void> {
-  const docRef = doc(db, "quizzes", id);
-  await updateDoc(docRef, { order });
-}
 
 // For Admins: get all master quizzes
 export async function getQuizzes(): Promise<Quiz[]> {
@@ -102,40 +99,48 @@ export async function getQuizForUser(quizId: string, userId: string): Promise<Qu
  * with the master list of quizzes.
  */
 export async function getQuizzesForUser(userId: string): Promise<Quiz[]> {
-  const masterQuizzes = await getQuizzes();
-  if (masterQuizzes.length === 0) return [];
+    // For now, students can see all quizzes. This can be adapted for batch assignments.
+    const masterQuizzes = await getQuizzes();
+    if (masterQuizzes.length === 0) return [];
+    
+    const userQuizzesSubcollectionRef = collection(db, `users/${userId}/quizzes`);
+    const userQuizStatesSnapshot = await getDocs(userQuizzesSubcollectionRef);
+    
+    const userQuizMap = new Map<string, { status: 'Completed' | 'Not Started' | 'In Progress', results: QuizResult[] }>();
+    userQuizStatesSnapshot.docs.forEach(doc => {
+        const data = doc.data();
+        userQuizMap.set(doc.id, { status: data.status, results: data.results || [] });
+    });
 
-  // 🚫 hide Draft & Archived from students
-  const visibleToStudents = masterQuizzes.filter(q => q.status !== 'Draft' && q.status !== 'Archived');
-
-  const userQuizzesSubcollectionRef = collection(db, `users/${userId}/quizzes`);
-  const userQuizStatesSnapshot = await getDocs(userQuizzesSubcollectionRef);
-
-  const userQuizMap = new Map<string, { status: Quiz['status'], results: QuizResult[] }>();
-  userQuizStatesSnapshot.docs.forEach(doc => {
-    const data = doc.data();
-    userQuizMap.set(doc.id, { status: data.status, results: data.results || [] });
-  });
-
-  return visibleToStudents.map(masterQuiz => {
-    const userVersion = userQuizMap.get(masterQuiz.id);
-    const hasResults = userVersion?.results && userVersion.results.length > 0;
-
-    return {
-      ...masterQuiz,
-      status: hasResults ? 'Completed' : (userVersion?.status || 'Not Started'),
-      results: userVersion?.results || []
-    };
-  });
+    return masterQuizzes.map(masterQuiz => {
+        const userVersion = userQuizMap.get(masterQuiz.id);
+        const hasResults = userVersion?.results && userVersion.results.length > 0;
+        
+        return {
+            ...masterQuiz,
+            status: hasResults ? 'Completed' : (userVersion?.status || 'Not Started'),
+            results: userVersion?.results || []
+        };
+    });
 }
-
 
 
 /**
  * Submits a student's quiz result. It ensures a user-specific quiz record exists
  * before adding the new result to it.
+ * If the result is a practice attempt, it's stored in a separate subcollection.
  */
 export async function submitQuizResult(quizId: string, userId: string, result: QuizResult) {
+    if (result.isPractice) {
+        // Store practice attempts in a separate subcollection to not affect official scores
+        const practiceAttemptsRef = collection(db, `users/${userId}/practiceAttempts`);
+        await addDoc(practiceAttemptsRef, {
+            quizId,
+            ...result
+        });
+        return;
+    }
+
     const userQuizDocRef = doc(db, `users/${userId}/quizzes/${quizId}`);
     const docSnap = await getDoc(userQuizDocRef);
 
@@ -155,6 +160,7 @@ export async function submitQuizResult(quizId: string, userId: string, result: Q
 /**
  * Retrieves all results for a specific quiz across all users.
  * This is used for calculating aggregate analytics.
+ * This function only retrieves official (non-practice) results.
  */
 export async function getAllResultsForQuiz(quizId: string): Promise<QuizResult[]> {
     const userQuizzesQuery = query(collectionGroup(db, 'quizzes'));
@@ -167,10 +173,28 @@ export async function getAllResultsForQuiz(quizId: string): Promise<QuizResult[]
         if (doc.ref.parent.parent && doc.ref.parent.parent.path.startsWith('users/') && doc.id === quizId) {
             const data = doc.data();
             if (data.results && Array.isArray(data.results)) {
-                allResults.push(...data.results);
+                // Filter out any accidental practice results if the model changes
+                const officialResults = data.results.filter((r: QuizResult) => !r.isPractice);
+                allResults.push(...officialResults);
             }
         }
     });
     
     return allResults;
+}
+
+// Function to get the latest practice attempt for a user and quiz
+export async function getLatestPracticeAttempt(quizId: string, userId: string): Promise<QuizResult | null> {
+    const practiceAttemptsRef = collection(db, `users/${userId}/practiceAttempts`);
+    const q = query(practiceAttemptsRef, where("quizId", "==", quizId));
+    const snapshot = await getDocs(q);
+
+    if (snapshot.empty) {
+        return null;
+    }
+
+    const attempts = snapshot.docs.map(doc => doc.data() as QuizResult);
+    // Sort by date descending to get the latest
+    attempts.sort((a, b) => b.date - a.date);
+    return attempts[0];
 }

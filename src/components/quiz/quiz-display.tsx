@@ -4,7 +4,7 @@
 import { useEffect, useState } from "react";
 import type { Quiz } from "@/lib/types";
 import { QuizInterface } from "@/components/quiz/quiz-interface";
-import { Clock, Loader2 } from "lucide-react";
+import { Clock, Loader2, Beaker } from "lucide-react";
 import Link from "next/link";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -12,8 +12,10 @@ import { useAuth } from "@/context/auth-context";
 import { Progress } from "@/components/ui/progress";
 import { cn } from "@/lib/utils";
 import { getQuizForUser, getQuiz } from "@/services/quiz-service";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { Badge } from "@/components/ui/badge";
 
-export function QuizDisplay({ quiz: initialQuiz }: { quiz: Quiz }) {
+export function QuizDisplay({ quiz: initialQuiz, isPractice }: { quiz: Quiz, isPractice: boolean }) {
   const { user, role } = useAuth();
   const [quiz, setQuiz] = useState<Quiz | null>(null);
   const [loading, setLoading] = useState(true);
@@ -86,6 +88,12 @@ export function QuizDisplay({ quiz: initialQuiz }: { quiz: Quiz }) {
         <div className="flex items-center justify-between">
             <h1 className="text-xl font-bold font-headline text-primary">{quiz.title}</h1>
             <div className="flex items-center gap-4">
+                {isPractice && (
+                    <Badge variant="outline" className="border-blue-500 text-blue-500">
+                        <Beaker className="mr-2 h-4 w-4" />
+                        Practice Mode
+                    </Badge>
+                )}
                 {timeLeft !== null && (
                   <div className="flex items-center gap-2 rounded-md bg-accent px-3 py-1.5 text-sm font-medium text-accent-foreground">
                       <Clock className="h-4 w-4" />
@@ -109,7 +117,7 @@ export function QuizDisplay({ quiz: initialQuiz }: { quiz: Quiz }) {
         )}
       </header>
       <main className="flex flex-1 items-center justify-center p-4">
-        <QuizInterface quizData={quiz} onTimeUpdate={setTimeLeft} />
+        <QuizInterface quizData={quiz} onTimeUpdate={setTimeLeft} isPractice={isPractice} />
       </main>
     </div>
   );
