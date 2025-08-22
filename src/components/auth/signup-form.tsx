@@ -146,7 +146,7 @@ export function SignupForm() {
           <Input
             id="student-code"
             type="password"
-            placeholder="Enter code (e.g. SY0-701)"
+            placeholder=" (case-insensitive)"
             required
             value={studentCode}
             onChange={(e) => setStudentCode(e.target.value)}
