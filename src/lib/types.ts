@@ -23,6 +23,18 @@ export interface QuizResult {
     }[];
     isPractice?: boolean;
 }
+export interface QuizSession {
+  startedAt: number;
+  order: string[];
+  answersByQuestionId: Record<string, string | string[]>;
+  lastSavedAt: number;
+  currentIndex: number;
+  submittedAt?: number;   // <-- important
+}
+
+
+
+
 
 export interface Quiz {
   id: string;

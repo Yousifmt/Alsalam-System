@@ -1,5 +1,3 @@
-
-
 import { db } from "@/lib/firebase";
 import {
   collection,
@@ -13,188 +11,209 @@ import {
   arrayUnion,
   collectionGroup,
   query,
-  where
+  where,
+  serverTimestamp,
 } from "firebase/firestore";
-import type { Quiz, QuizResult } from "@/lib/types";
-import { getStudents } from "./user-service";
+import type { Quiz, QuizResult, QuizSession } from "@/lib/types";
 
 const quizzesCollection = collection(db, "quizzes");
 
-// For Admins: create a new quiz in the main pool
-export async function createQuiz(quizData: Omit<Quiz, 'id'>): Promise<string> {
-    const docRef = await addDoc(quizzesCollection, quizData);
-    return docRef.id;
+/** Attach Firestore doc id without double 'id' */
+function withDocId<T extends object>(docId: string, data: T): T & { id: string } {
+  const { id: _drop, ...rest } = (data as any) ?? {};
+  return { ...(rest as T), id: docId };
 }
 
-// For Admins: update an existing quiz
-export async function updateQuiz(id: string, quizData: Omit<Quiz, 'id'>): Promise<void> {
-    const docRef = doc(db, "quizzes", id);
-    await setDoc(docRef, quizData); // setDoc overwrites the document with new data
+// ====================== Admin ======================
+
+export async function createQuiz(quizData: Omit<Quiz, "id">): Promise<string> {
+  const ref = await addDoc(quizzesCollection, quizData);
+  return ref.id;
 }
 
-// For Admins: delete a quiz
+export async function updateQuiz(id: string, quizData: Omit<Quiz, "id">): Promise<void> {
+  const ref = doc(db, "quizzes", id);
+  await setDoc(ref, quizData);
+}
+
 export async function deleteQuiz(id: string): Promise<void> {
-    const docRef = doc(db, "quizzes", id);
-    await deleteDoc(docRef);
-    // Note: This does not delete subcollections (user results). 
-    // For a production app, a Firebase Function would be needed to clean up results.
+  const ref = doc(db, "quizzes", id);
+  await deleteDoc(ref);
 }
 
+// ==================== Reads ====================
 
-// For Admins: get all master quizzes
 export async function getQuizzes(): Promise<Quiz[]> {
-    const snapshot = await getDocs(quizzesCollection);
-    return snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Quiz));
+  const snap = await getDocs(quizzesCollection);
+  return snap.docs.map(d => withDocId<Quiz>(d.id, d.data() as Quiz));
 }
 
-// For Search: get all master quizzes without user-specific data
 export async function getQuizzesForSearch(): Promise<Quiz[]> {
-    return getQuizzes();
+  return getQuizzes();
 }
 
-
-// For anyone: get a single master quiz
 export async function getQuiz(id: string): Promise<Quiz | null> {
-    const docRef = doc(db, "quizzes", id);
-    const docSnap = await getDoc(docRef);
-    return docSnap.exists() ? { id: docSnap.id, ...docSnap.data() } as Quiz : null;
+  const ref = doc(db, "quizzes", id);
+  const snap = await getDoc(ref);
+  if (!snap.exists()) return null;
+  return withDocId<Quiz>(snap.id, snap.data() as Quiz);
 }
 
-/**
- * Retrieves the user-specific version of a quiz.
- * It merges the master quiz data with the user's specific data (status, results).
- */
 export async function getQuizForUser(quizId: string, userId: string): Promise<Quiz> {
-    const masterQuiz = await getQuiz(quizId);
-    if (!masterQuiz) {
-        throw new Error("Quiz not found");
-    }
+  const master = await getQuiz(quizId);
+  if (!master) throw new Error("Quiz not found");
 
-    const userQuizDocRef = doc(db, `users/${userId}/quizzes/${quizId}`);
-    const userQuizSnap = await getDoc(userQuizDocRef);
+  const userRef = doc(db, `users/${userId}/quizzes/${quizId}`);
+  const userSnap = await getDoc(userRef);
 
-    if (!userQuizSnap.exists()) {
-        // The document will be created on first result submission,
-        // so if it doesn't exist, the user hasn't started it yet.
-        return { 
-            ...masterQuiz, 
-            id: quizId, 
-            status: 'Not Started',
-            results: [],
-        };
-    } else {
-        const userQuizData = userQuizSnap.data();
-        return { 
-            ...masterQuiz,
-            id: quizId, 
-            status: userQuizData.status,
-            results: userQuizData.results || [],
-        };
-    }
+  if (!userSnap.exists()) {
+    return { ...master, status: "Not Started", results: [] };
+  }
+  const u = userSnap.data() as { status: Quiz["status"]; results?: QuizResult[] };
+  return { ...master, status: u.status, results: u.results || [] };
 }
 
-
-/**
- * Retrieves all quizzes for a specific user, merging their progress (status, results)
- * with the master list of quizzes.
- */
 export async function getQuizzesForUser(userId: string): Promise<Quiz[]> {
-    // For now, students can see all quizzes. This can be adapted for batch assignments.
-    const masterQuizzes = await getQuizzes();
-    if (masterQuizzes.length === 0) return [];
-    
-    const userQuizzesSubcollectionRef = collection(db, `users/${userId}/quizzes`);
-    const userQuizStatesSnapshot = await getDocs(userQuizzesSubcollectionRef);
-    
-    const userQuizMap = new Map<string, { status: 'Completed' | 'Not Started' | 'In Progress', results: QuizResult[] }>();
-    userQuizStatesSnapshot.docs.forEach(doc => {
-        const data = doc.data();
-        userQuizMap.set(doc.id, { status: data.status, results: data.results || [] });
-    });
+  const master = await getQuizzes();
+  if (!master.length) return [];
 
-    return masterQuizzes.map(masterQuiz => {
-        const userVersion = userQuizMap.get(masterQuiz.id);
-        const hasResults = userVersion?.results && userVersion.results.length > 0;
-        
-        return {
-            ...masterQuiz,
-            status: hasResults ? 'Completed' : (userVersion?.status || 'Not Started'),
-            results: userVersion?.results || []
-        };
-    });
+  const userRef = collection(db, `users/${userId}/quizzes`);
+  const userSnap = await getDocs(userRef);
+
+  const state = new Map<string, { status: Quiz["status"]; results: QuizResult[] }>();
+  userSnap.docs.forEach(d => {
+    const data = d.data() as { status: Quiz["status"]; results?: QuizResult[] };
+    state.set(d.id, { status: data.status, results: data.results || [] });
+  });
+
+  return master.map(m => {
+    const u = state.get(m.id);
+    const hasResults = !!u?.results?.length;
+    return { ...m, status: hasResults ? "Completed" : u?.status || "Not Started", results: u?.results || [] };
+  });
 }
 
+// =================== Results ===================
 
-/**
- * Submits a student's quiz result. It ensures a user-specific quiz record exists
- * before adding the new result to it.
- * If the result is a practice attempt, it's stored in a separate subcollection.
- */
 export async function submitQuizResult(quizId: string, userId: string, result: QuizResult) {
-    if (result.isPractice) {
-        // Store practice attempts in a separate subcollection to not affect official scores
-        const practiceAttemptsRef = collection(db, `users/${userId}/practiceAttempts`);
-        await addDoc(practiceAttemptsRef, {
-            quizId,
-            ...result
-        });
-        return;
-    }
+  if (result.isPractice) {
+    const ref = collection(db, `users/${userId}/practiceAttempts`);
+    await addDoc(ref, { quizId, ...result });
+    return;
+  }
+  const userRef = doc(db, `users/${userId}/quizzes/${quizId}`);
+  const snap = await getDoc(userRef);
+  if (!snap.exists()) {
+    await setDoc(userRef, { status: "Completed", results: [result] });
+  } else {
+    await updateDoc(userRef, { status: "Completed", results: arrayUnion(result) });
+  }
+}
 
-    const userQuizDocRef = doc(db, `users/${userId}/quizzes/${quizId}`);
-    const docSnap = await getDoc(userQuizDocRef);
+export async function getAllResultsForQuiz(quizId: string): Promise<QuizResult[]> {
+  const cg = query(collectionGroup(db, "quizzes"));
+  const snap = await getDocs(cg);
+  const out: QuizResult[] = [];
+  snap.forEach(d => {
+    if (d.id !== quizId) return;
+    const data = d.data() as { results?: QuizResult[] };
+    if (Array.isArray(data.results)) out.push(...data.results.filter(r => !r.isPractice));
+  });
+  return out;
+}
 
-    if (!docSnap.exists()) {
-        await setDoc(userQuizDocRef, {
-            status: 'Completed',
-            results: [result]
-        });
-    } else {
-        await updateDoc(userQuizDocRef, {
-            status: 'Completed',
-            results: arrayUnion(result)
-        });
-    }
+export async function getLatestPracticeAttempt(quizId: string, userId: string): Promise<QuizResult | null> {
+  const ref = collection(db, `users/${userId}/practiceAttempts`);
+  const qy = query(ref, where("quizId", "==", quizId));
+  const snap = await getDocs(qy);
+  if (snap.empty) return null;
+  const attempts = snap.docs.map(d => d.data() as QuizResult);
+  attempts.sort((a, b) => b.date - a.date);
+  return attempts[0];
+}
+
+// =================== Sessions ===================
+
+function fyShuffle<T>(arr: T[]): T[] {
+  const a = [...arr];
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
 }
 
 /**
- * Retrieves all results for a specific quiz across all users.
- * This is used for calculating aggregate analytics.
- * This function only retrieves official (non-practice) results.
+ * Resume an in-progress attempt; if the existing session is submitted, start a NEW attempt.
+ * Session doc is at: quizzes/{quizId}/sessions/{uid}
+ * We overwrite the same doc to start a new attempt.
  */
-export async function getAllResultsForQuiz(quizId: string): Promise<QuizResult[]> {
-    const userQuizzesQuery = query(collectionGroup(db, 'quizzes'));
+export async function startOrResumeActiveSession(
+  quizId: string,
+  uid: string,
+  questionIds: string[],
+  shuffleQuestions: boolean
+): Promise<QuizSession> {
+  const ref = doc(db, "quizzes", quizId, "sessions", uid);
+  const snap = await getDoc(ref);
 
-    const snapshot = await getDocs(userQuizzesQuery);
-    const allResults: QuizResult[] = [];
+  if (snap.exists()) {
+    const data = snap.data() as QuizSession;
 
-    snapshot.forEach(doc => {
-        // We only care about documents from the subcollection that match the quizId
-        if (doc.ref.parent.parent && doc.ref.parent.parent.path.startsWith('users/') && doc.id === quizId) {
-            const data = doc.data();
-            if (data.results && Array.isArray(data.results)) {
-                // Filter out any accidental practice results if the model changes
-                const officialResults = data.results.filter((r: QuizResult) => !r.isPractice);
-                allResults.push(...officialResults);
-            }
-        }
-    });
-    
-    return allResults;
-}
-
-// Function to get the latest practice attempt for a user and quiz
-export async function getLatestPracticeAttempt(quizId: string, userId: string): Promise<QuizResult | null> {
-    const practiceAttemptsRef = collection(db, `users/${userId}/practiceAttempts`);
-    const q = query(practiceAttemptsRef, where("quizId", "==", quizId));
-    const snapshot = await getDocs(q);
-
-    if (snapshot.empty) {
-        return null;
+    // If previous attempt was submitted -> start a NEW attempt (overwrite doc)
+    if (data.submittedAt) {
+      const order = shuffleQuestions ? fyShuffle(questionIds) : [...questionIds];
+      const fresh: QuizSession = {
+        startedAt: Date.now(),
+        order,
+        answersByQuestionId: {},
+        lastSavedAt: Date.now(),
+        currentIndex: 0,
+      };
+      await setDoc(ref, { ...fresh, _createdAt: serverTimestamp() });
+      return fresh;
     }
 
-    const attempts = snapshot.docs.map(doc => doc.data() as QuizResult);
-    // Sort by date descending to get the latest
-    attempts.sort((a, b) => b.date - a.date);
-    return attempts[0];
+    // Still in progress: ensure stable order
+    let order = data.order && data.order.length === questionIds.length ? data.order : (shuffleQuestions ? fyShuffle(questionIds) : [...questionIds]);
+    if (!data.order || data.order.length !== questionIds.length) {
+      await updateDoc(ref, { order });
+    }
+
+    return {
+      startedAt: data.startedAt,
+      order,
+      answersByQuestionId: data.answersByQuestionId ?? {},
+      lastSavedAt: data.lastSavedAt ?? Date.now(),
+      currentIndex: data.currentIndex ?? 0,
+      submittedAt: undefined,
+    };
+  }
+
+  // No session -> create new
+  const order = shuffleQuestions ? fyShuffle(questionIds) : [...questionIds];
+  const fresh: QuizSession = {
+    startedAt: Date.now(),
+    order,
+    answersByQuestionId: {},
+    lastSavedAt: Date.now(),
+    currentIndex: 0,
+  };
+  await setDoc(ref, { ...fresh, _createdAt: serverTimestamp() });
+  return fresh;
+}
+
+export async function saveQuizProgress(
+  quizId: string,
+  uid: string,
+  answersByQuestionId: Record<string, string | string[]>,
+  currentIndex: number
+): Promise<void> {
+  const ref = doc(db, "quizzes", quizId, "sessions", uid);
+  await updateDoc(ref, { answersByQuestionId, currentIndex, lastSavedAt: Date.now() });
+}
+
+export async function finalizeQuizAttempt(quizId: string, uid: string): Promise<void> {
+  const ref = doc(db, "quizzes", quizId, "sessions", uid);
+  await updateDoc(ref, { submittedAt: Date.now(), lastSavedAt: Date.now() });
 }
