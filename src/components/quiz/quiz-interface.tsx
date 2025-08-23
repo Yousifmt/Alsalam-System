@@ -1,369 +1,408 @@
 "use client";
 
-import React, { useState, useEffect, useRef, useMemo } from 'react';
-import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from '@/components/ui/card';
-import { Button } from '@/components/ui/button';
-import { Progress } from '@/components/ui/progress';
-import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
-import { Label } from '@/components/ui/label';
-import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from '../ui/alert-dialog';
-import { useRouter } from 'next/navigation';
-import type { Question, Quiz, QuizResult } from '@/lib/types';
-import Image from 'next/image';
-import { Checkbox } from '../ui/checkbox';
-import { Input } from '../ui/input';
-import { useAuth } from '@/context/auth-context';
-import { submitQuizResult } from '@/services/quiz-service';
-import { useToast } from '@/hooks/use-toast';
-import { Alert, AlertTitle, AlertDescription } from '../ui/alert';
-import { Beaker, CheckCircle, XCircle } from 'lucide-react';
-import { cn } from '@/lib/utils';
+import React, { useState, useEffect, useRef, useMemo } from "react";
+import {
+  Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle,
+} from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
+import { Progress } from "@/components/ui/progress";
+import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
+import { Label } from "@/components/ui/label";
+import {
+  AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription,
+  AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger,
+} from "../ui/alert-dialog";
+import type { Question, Quiz, QuizResult } from "@/lib/types";
+import Image from "next/image";
+import { Checkbox } from "../ui/checkbox";
+import { Input } from "../ui/input";
+import { useAuth } from "@/context/auth-context";
+import { Alert, AlertTitle, AlertDescription } from "../ui/alert";
+import { Beaker, CheckCircle, XCircle } from "lucide-react";
+import { cn } from "@/lib/utils";
 
-// Fisher-Yates shuffle algorithm
-const shuffleArray = <T,>(array: T[]): T[] => {
-  const shuffled = [...array];
-  for (let i = shuffled.length - 1; i > 0; i--) {
+const shuffle = <T,>(arr: T[]): T[] => {
+  const a = [...arr];
+  for (let i = a.length - 1; i > 0; i--) {
     const j = Math.floor(Math.random() * (i + 1));
-    [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+    [a[i], a[j]] = [a[j], a[i]];
   }
-  return shuffled;
+  return a;
 };
 
-export function QuizInterface({ quizData, onTimeUpdate, isPractice }: { quizData: Quiz, onTimeUpdate?: (time: number) => void, isPractice: boolean }) {
-  const router = useRouter();
-  const { toast } = useToast();
-  const { user, role } = useAuth();
-  
+export function QuizInterface({
+  quizData,
+  onTimeUpdate,
+  isPractice,
+  initialAnswersByQuestionId,
+  initialIndex = 0,
+  initialTimeLeft = null,
+  questionOrder,
+  onAnswerChange,                      // (answers, currentIndex)
+  onSubmitFinalize,                    // called on manual submit or time-up auto-submit
+}: {
+  quizData: Quiz;
+  onTimeUpdate?: (time: number) => void;
+  isPractice: boolean;
+  initialAnswersByQuestionId?: Record<string, string | string[]>;
+  initialIndex?: number;
+  initialTimeLeft?: number | null;
+  questionOrder?: string[];
+  onAnswerChange?: (answers: Record<string, string | string[]>, currentIndex: number) => void;
+  onSubmitFinalize?: (result: QuizResult) => Promise<void> | void;
+}) {
+  const { role } = useAuth();
+
+  // Build questions in stable order from session (or fallback)
   const [processedQuestions] = useState(() => {
-    let questions = quizData.questions;
-    if (quizData.shuffleQuestions) {
-      questions = shuffleArray(questions);
+    let list = [...quizData.questions];
+
+    if (questionOrder && questionOrder.length === list.length) {
+      const map = new Map(list.map(q => [q.id, q]));
+      list = questionOrder.map(id => map.get(id)!).filter(Boolean);
+    } else if (quizData.shuffleQuestions) {
+      list = shuffle(list);
     }
+
     if (quizData.shuffleAnswers) {
-      questions = questions.map(q => ({
+      list = list.map(q => ({
         ...q,
-        options: q.type !== 'short-answer' ? shuffleArray(q.options) : [],
+        options: q.type !== "short-answer" ? shuffle(q.options) : [],
       }));
     }
-    return questions;
+    return list;
   });
-  
-  const [currentQuestionIndex, setCurrentQuestionIndex] = useState(0);
-  const [answers, setAnswers] = useState<Record<number, string | string[]>>({});
-  const [progress, setProgress] = useState(0);
-  const [timeLeft, setTimeLeft] = useState(quizData.timeLimit && !isPractice ? quizData.timeLimit * 60 : null);
-  
-  // Practice mode specific state
+
+  // Resume index & answers
+  const [currentQuestionIndex, setCurrentQuestionIndex] = useState(initialIndex);
+  const [answers, setAnswers] = useState<Record<string, string | string[]>>(initialAnswersByQuestionId ?? {});
+  const hydratedRef = useRef(false);
+  useEffect(() => {
+    if (!hydratedRef.current && initialAnswersByQuestionId) {
+      setAnswers(prev => ({ ...prev, ...initialAnswersByQuestionId }));
+      setCurrentQuestionIndex(initialIndex);
+      hydratedRef.current = true;
+      onAnswerChange?.({ ...initialAnswersByQuestionId }, initialIndex);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialAnswersByQuestionId, initialIndex]);
+
+  // Timer (resumed from parent calculation)
+  const [timeLeft, setTimeLeft] = useState<number | null>(() => {
+    if (initialTimeLeft !== null) return initialTimeLeft;
+    return quizData.timeLimit && !isPractice ? quizData.timeLimit * 60 : null;
+  });
+  useEffect(() => {
+    if (initialTimeLeft !== null) setTimeLeft(initialTimeLeft);
+  }, [initialTimeLeft]);
+
+  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const autoSubmittedRef = useRef(false);
+
+  // practice grading state
   const [isGraded, setIsGraded] = useState(false);
-  const [score, setScore] = useState<{ correct: number, total: number } | null>(null);
+  const [score, setScore] = useState<{ correct: number; total: number } | null>(null);
 
-  const timerRef = useRef<NodeJS.Timeout | null>(null);
-
-  const originalQuestionsMap = useMemo(() => {
-    const map = new Map<string, Question>();
-    quizData.questions.forEach(q => map.set(q.id, q));
-    return map;
+  const originalById = useMemo(() => {
+    const m = new Map<string, Question>();
+    quizData.questions.forEach(q => m.set(q.id, q));
+    return m;
   }, [quizData.questions]);
 
-  // Build wrong indices (relative to processedQuestions) after grading
+  // wrong indices (after grade)
   const wrongAnswerIndices = useMemo(() => {
     if (!isGraded) return [] as number[];
     return processedQuestions
-      .map((q, index) => {
-        const originalQuestion = originalQuestionsMap.get(q.id);
-        if (!originalQuestion) return { index, isCorrect: true };
-
-        const userAnswer = answers[index];
-        let isCorrect = false;
-        if (originalQuestion.type === 'checkbox') {
-          const correctAnswers = (originalQuestion.answer as string[]).sort();
-          const studentAnswers = (userAnswer as string[] || []).sort();
-          isCorrect =
-            correctAnswers.length === studentAnswers.length &&
-            correctAnswers.every((val, i) => val === studentAnswers[i]);
+      .map((q, idx) => {
+        const orig = originalById.get(q.id);
+        if (!orig) return { idx, ok: true };
+        const ua = answers[q.id];
+        let ok = false;
+        if (orig.type === "checkbox") {
+          const c = (orig.answer as string[]).slice().sort();
+          const s = ((ua as string[]) || []).slice().sort();
+          ok = c.length === s.length && c.every((v, i) => v === s[i]);
         } else {
-          isCorrect = userAnswer === originalQuestion.answer;
+          ok = ua === orig.answer;
         }
-        return { index, isCorrect };
+        return { idx, ok };
       })
-      .filter(item => !item.isCorrect)
-      .map(item => item.index);
-  }, [answers, isGraded, processedQuestions, originalQuestionsMap]);
+      .filter(x => !x.ok)
+      .map(x => x.idx);
+  }, [answers, isGraded, processedQuestions, originalById]);
 
-  // Edge flags
   const isAtFirst = currentQuestionIndex === 0;
-  const isAtLast  = currentQuestionIndex === processedQuestions.length - 1;
+  const isAtLast = currentQuestionIndex === processedQuestions.length - 1;
+  const prevWrongDisabled = isAtFirst || !wrongAnswerIndices.some(i => i < currentQuestionIndex);
+  const nextWrongDisabled = isAtLast || !wrongAnswerIndices.some(i => i > currentQuestionIndex);
 
-  // Is there any wrong BEFORE/AFTER current position?
-  const anyWrongBefore = useMemo(
-    () => wrongAnswerIndices.some(i => i < currentQuestionIndex),
-    [wrongAnswerIndices, currentQuestionIndex]
-  );
-  const anyWrongAfter = useMemo(
-    () => wrongAnswerIndices.some(i => i > currentQuestionIndex),
-    [wrongAnswerIndices, currentQuestionIndex]
-  );
-
-  // Disable rules exactly as requested
-  const prevWrongDisabled = isAtFirst || !anyWrongBefore;
-  const nextWrongDisabled = isAtLast || !anyWrongAfter;
-
+  // Countdown (normal mode only). On time-up, auto-submit once.
   useEffect(() => {
-    if (timeLeft === null || role === 'admin' || isPractice) return;
+    if (timeLeft === null || role === "admin" || isPractice) return;
+
     if (timeLeft <= 0) {
-      handleSubmit(true); // Force submit when time is up
+      if (!autoSubmittedRef.current && onSubmitFinalize) {
+        autoSubmittedRef.current = true;
+        if (timerRef.current) clearInterval(timerRef.current);
+        const result = computeResult();
+        onSubmitFinalize(result);
+      }
       return;
     }
+
     timerRef.current = setInterval(() => {
       setTimeLeft(prev => (prev !== null ? prev - 1 : null));
     }, 1000);
+
     return () => {
       if (timerRef.current) clearInterval(timerRef.current);
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [timeLeft, role, isPractice]);
 
+  // bubble time up to header
   useEffect(() => {
-    if (onTimeUpdate && timeLeft !== null) {
-      onTimeUpdate(timeLeft);
-    }
+    if (onTimeUpdate && timeLeft !== null) onTimeUpdate(timeLeft);
   }, [timeLeft, onTimeUpdate]);
 
+  // progress
+  const [progress, setProgress] = useState(0);
   useEffect(() => {
-    const answeredCount = Object.values(answers).filter(a => (Array.isArray(a) ? a.length > 0 : a)).length;
-    setProgress((answeredCount / processedQuestions.length) * 100);
-  }, [answers, processedQuestions.length]);
+    const answered = processedQuestions.reduce((acc, q) => {
+      const a = answers[q.id];
+      const has = Array.isArray(a) ? a.length > 0 : !!a;
+      return acc + (has ? 1 : 0);
+    }, 0);
+    setProgress((answered / processedQuestions.length) * 100);
+  }, [answers, processedQuestions]);
 
-  // Live re-grade in Practice Mode after first grading
+  // practice re-grade live
   useEffect(() => {
-    if (isPractice && isGraded) {
-      handleGrade();
-    }
+    if (isPractice && isGraded) handleGrade();
   }, [answers, isPractice, isGraded]);
 
+  const emitChange = (nextAnswers: Record<string, string | string[]>, idx: number) => {
+    onAnswerChange?.(nextAnswers, idx);
+  };
+
   const handleAnswerSelect = (answer: string) => {
-    const currentQuestion = processedQuestions[currentQuestionIndex];
-    if (currentQuestion.type === 'checkbox') {
-      const currentAnswers = (answers[currentQuestionIndex] as string[] || []);
-      const newAnswers = currentAnswers.includes(answer) 
-        ? currentAnswers.filter(a => a !== answer)
-        : [...currentAnswers, answer];
-      setAnswers(prev => ({ ...prev, [currentQuestionIndex]: newAnswers }));
+    const q = processedQuestions[currentQuestionIndex];
+    const qid = q.id;
+
+    if (q.type === "checkbox") {
+      const curr = ((answers[qid] as string[]) || []);
+      const updated = curr.includes(answer) ? curr.filter(a => a !== answer) : [...curr, answer];
+      setAnswers(prev => {
+        const next = { ...prev, [qid]: updated };
+        emitChange(next, currentQuestionIndex);
+        return next;
+      });
     } else {
-      setAnswers(prev => ({ ...prev, [currentQuestionIndex]: answer }));
+      setAnswers(prev => {
+        const next = { ...prev, [qid]: answer };
+        emitChange(next, currentQuestionIndex);
+        return next;
+      });
     }
   };
 
   const handleNext = () => {
-    if (currentQuestionIndex < processedQuestions.length - 1) {
-      setCurrentQuestionIndex(prev => prev + 1);
-    }
+    if (isAtLast) return;
+    setCurrentQuestionIndex(prev => {
+      const idx = prev + 1;
+      emitChange(answers, idx);
+      return idx;
+    });
   };
 
   const handlePrev = () => {
-    if (currentQuestionIndex > 0) {
-      setCurrentQuestionIndex(prev => prev - 1);
-    }
-  };
-  
-  const handleGrade = () => {
-    let correctCount = 0;
-    processedQuestions.forEach((q, index) => {
-      const originalQuestion = originalQuestionsMap.get(q.id);
-      if (!originalQuestion) return;
-      const userAnswer = answers[index];
-      let isCorrect = false;
-
-      if (originalQuestion.type === 'checkbox') {
-        const correctAnswers = (originalQuestion.answer as string[]).sort();
-        const studentAnswers = (userAnswer as string[] || []).sort();
-        isCorrect =
-          correctAnswers.length === studentAnswers.length &&
-          correctAnswers.every((val, i) => val === studentAnswers[i]);
-      } else {
-        isCorrect = userAnswer === originalQuestion.answer;
-      }
-      if (isCorrect) correctCount++;
+    if (isAtFirst) return;
+    setCurrentQuestionIndex(prev => {
+      const idx = prev - 1;
+      emitChange(answers, idx);
+      return idx;
     });
-    setScore({ correct: correctCount, total: processedQuestions.length });
+  };
+
+  const handleGrade = () => {
+    let correct = 0;
+    processedQuestions.forEach(q => {
+      const orig = originalById.get(q.id);
+      if (!orig) return;
+      const ua = answers[q.id];
+      let ok = false;
+      if (orig.type === "checkbox") {
+        const c = (orig.answer as string[]).slice().sort();
+        const s = ((ua as string[]) || []).slice().sort();
+        ok = c.length === s.length && c.every((v, i) => v === s[i]);
+      } else {
+        ok = ua === orig.answer;
+      }
+      if (ok) correct++;
+    });
+    setScore({ correct, total: processedQuestions.length });
     if (!isGraded) setIsGraded(true);
   };
 
-  // Jump to nearest wrong BEFORE or AFTER current index
-  const navigateWrongAnswers = (direction: 'next' | 'prev') => {
-    if (wrongAnswerIndices.length === 0) return;
-
-    if (direction === 'prev') {
-      // largest wrong index that is < currentQuestionIndex
+  const navigateWrongAnswers = (direction: "next" | "prev") => {
+    if (!wrongAnswerIndices.length) return;
+    if (direction === "prev") {
       const prevWrong = [...wrongAnswerIndices].filter(i => i < currentQuestionIndex).pop();
-      if (prevWrong !== undefined) setCurrentQuestionIndex(prevWrong);
+      if (prevWrong !== undefined) {
+        setCurrentQuestionIndex(prevWrong);
+        emitChange(answers, prevWrong);
+      }
       return;
     }
-
-    // direction === 'next'
     const nextWrong = wrongAnswerIndices.find(i => i > currentQuestionIndex);
-    if (nextWrong !== undefined) setCurrentQuestionIndex(nextWrong);
+    if (nextWrong !== undefined) {
+      setCurrentQuestionIndex(nextWrong);
+      emitChange(answers, nextWrong);
+    }
   };
 
-  const handleSubmit = async (timeUp = false) => {
-    if (timerRef.current) clearInterval(timerRef.current);
-
-    if (role === 'admin' || !user) {
-      router.push('/dashboard/quizzes');
-      return;
-    }
-
-    let scoreCount = 0;
-    const answeredQuestions: QuizResult['answeredQuestions'] = [];
-
-    processedQuestions.forEach((q, index) => {
-      const userAnswer = answers[index];
-      let isCorrect = false;
-      const originalQuestion = originalQuestionsMap.get(q.id);
-      if (!originalQuestion) return;
-
-      if (originalQuestion.type === 'checkbox') {
-        const correctAnswers = (originalQuestion.answer as string[]).sort();
-        const studentAnswers = (userAnswer as string[] || []).sort();
-        isCorrect =
-          correctAnswers.length === studentAnswers.length &&
-          correctAnswers.every((val, i) => val === studentAnswers[i]);
+  const computeResult = (): QuizResult => {
+    let correct = 0;
+    const answeredQuestions = processedQuestions.map(q => {
+      const orig = originalById.get(q.id)!;
+      const ua = answers[q.id];
+      let ok = false;
+      if (orig.type === "checkbox") {
+        const c = (orig.answer as string[]).slice().sort();
+        const s = ((ua as string[]) || []).slice().sort();
+        ok = c.length === s.length && c.every((v, i) => v === s[i]);
       } else {
-        isCorrect = userAnswer === originalQuestion.answer;
+        ok = ua === orig.answer;
       }
-
-      if (isCorrect) scoreCount++;
-
-      answeredQuestions.push({
+      if (ok) correct++;
+      return {
         question: q.question,
-        userAnswer: userAnswer || "No answer",
-        correctAnswer: originalQuestion.answer,
-        isCorrect,
-      });
+        userAnswer: ua || "No answer",
+        correctAnswer: orig.answer,
+        isCorrect: ok,
+      };
     });
 
-    const newResult: QuizResult = {
+    return {
       date: Date.now(),
-      score: scoreCount,
+      score: correct,
       total: processedQuestions.length,
       answeredQuestions,
-      isPractice: isPractice,
+      isPractice,
     };
-    
-    try {
-      await submitQuizResult(quizData.id, user.uid, newResult);
-      if (timeUp) {
-        toast({
-          title: "Time's up!",
-          description: "Your quiz has been submitted automatically.",
-          variant: "destructive"
-        });
-      }
-      router.push(`/quiz/${quizData.id}/results?practice=${isPractice}`);
-    } catch (error) {
-      console.error("Failed to submit quiz results:", error);
-      toast({
-        title: "Error",
-        description: "Could not submit your quiz results. Please try again.",
-        variant: "destructive"
-      });
-    }
+  };
+
+  const handleManualSubmit = async () => {
+    if (!onSubmitFinalize) return;
+    const result = computeResult();
+    await onSubmitFinalize(result);
   };
 
   const currentQuestion = processedQuestions[currentQuestionIndex];
   if (!currentQuestion) return <p>Loading question...</p>;
 
-  // Inputs enabled in Practice Mode even after grading; locked otherwise
   const inputsDisabled = useMemo(() => {
-    return role === 'admin' || (!isPractice && isGraded);
+    return role === "admin" || (!isPractice && isGraded);
   }, [role, isPractice, isGraded]);
 
   const renderAnswerOptions = () => {
-    const originalQuestion = originalQuestionsMap.get(currentQuestion.id);
-    if (!originalQuestion) return null;
+    const orig = originalById.get(currentQuestion.id);
+    if (!orig) return null;
 
-    const getOptionClass = (option: string, isCheckbox: boolean = false) => {
-      if (!isGraded) return '';
-      const correctAnswer = originalQuestion.answer;
-      const userAnswer = answers[currentQuestionIndex];
-      const isCorrect = Array.isArray(correctAnswer) ? (correctAnswer as string[]).includes(option) : correctAnswer === option;
+    const ua = answers[currentQuestion.id];
 
-      if (isCorrect) return 'bg-green-100 dark:bg-green-900/30 border-green-500';
+    const getOptionClass = (opt: string, isCheckbox = false) => {
+      if (!isGraded) return "";
+      const correct = orig.answer;
+      const isCorrect = Array.isArray(correct) ? (correct as string[]).includes(opt) : correct === opt;
 
-      const isSelected = isCheckbox ? (userAnswer as string[])?.includes(option) : userAnswer === option;
-      if (isSelected && !isCorrect) return 'bg-red-100 dark:bg-red-900/30 border-red-500';
-      return '';
+      if (isCorrect) return "bg-green-100 dark:bg-green-900/30 border-green-500";
+
+      const selected = isCheckbox ? (ua as string[])?.includes(opt) : ua === opt;
+      if (selected && !isCorrect) return "bg-red-100 dark:bg-red-900/30 border-red-500";
+      return "";
     };
 
     switch (currentQuestion.type) {
-      case 'multiple-choice':
+      case "multiple-choice":
         return (
           <RadioGroup
-            value={(answers[currentQuestionIndex] as string) || ""}
+            value={(ua as string) || ""}
             onValueChange={handleAnswerSelect}
             className="space-y-3"
             disabled={inputsDisabled}
           >
-            {currentQuestion.options.map((option, index) => (
+            {currentQuestion.options.map((option, idx) => (
               <Label
-                key={index}
-                htmlFor={`option-${index}`}
+                key={idx}
+                htmlFor={`option-${idx}`}
                 className={cn(
                   "flex items-center gap-4 rounded-lg border p-4 cursor-pointer hover:bg-secondary has-[[data-state=checked]]:bg-primary has-[[data-state=checked]]:text-primary-foreground has-[[data-state=checked]]:border-primary transition-colors",
                   getOptionClass(option)
                 )}
               >
-                <RadioGroupItem value={option} id={`option-${index}`} disabled={inputsDisabled}/>
+                <RadioGroupItem value={option} id={`option-${idx}`} disabled={inputsDisabled} />
                 {isGraded && (
-                  originalQuestion.answer === option
-                    ? <CheckCircle className="h-5 w-5 text-green-600"/>
-                    : ((answers[currentQuestionIndex] === option)
-                        ? <XCircle className="h-5 w-5 text-red-600"/>
-                        : <div className="h-5 w-5"/>)
+                  orig.answer === option ? (
+                    <CheckCircle className="h-5 w-5 text-green-600" />
+                  ) : ua === option ? (
+                    <XCircle className="h-5 w-5 text-red-600" />
+                  ) : (
+                    <div className="h-5 w-5" />
+                  )
                 )}
                 <span>{option}</span>
               </Label>
             ))}
           </RadioGroup>
         );
-      case 'checkbox':
+
+      case "checkbox":
         return (
           <div className="space-y-3">
-            {currentQuestion.options.map((option, index) => (
-              <Label
-                key={index}
-                htmlFor={`option-${index}`}
-                className={cn(
-                  "flex items-center gap-4 rounded-lg border p-4 cursor-pointer hover:bg-secondary has-[[data-state=checked]]:bg-primary has-[[data-state=checked]]:text-primary-foreground has-[[data-state=checked]]:border-primary transition-colors",
-                  getOptionClass(option, true)
-                )}
-              >
-                <Checkbox
-                  id={`option-${index}`}
-                  onCheckedChange={() => handleAnswerSelect(option)}
-                  checked={(answers[currentQuestionIndex] as string[] || []).includes(option)}
-                  disabled={inputsDisabled}
-                />
-                {isGraded && (
-                  (originalQuestion.answer as string[]).includes(option)
-                    ? <CheckCircle className="h-5 w-5 text-green-600"/>
-                    : ((answers[currentQuestionIndex] as string[])?.includes(option)
-                        ? <XCircle className="h-5 w-5 text-red-600"/>
-                        : <div className="h-5 w-5"/>)
-                )}
-                <span>{option}</span>
-              </Label>
-            ))}
+            {currentQuestion.options.map((option, idx) => {
+              const checked = ((ua as string[]) || []).includes(option);
+              return (
+                <Label
+                  key={idx}
+                  htmlFor={`option-${idx}`}
+                  className={cn(
+                    "flex items-center gap-4 rounded-lg border p-4 cursor-pointer hover:bg-secondary has-[[data-state=checked]]:bg-primary has-[[data-state=checked]]:text-primary-foreground has-[[data-state=checked]]:border-primary transition-colors",
+                    getOptionClass(option, true)
+                  )}
+                >
+                  <Checkbox
+                    id={`option-${idx}`}
+                    onCheckedChange={() => handleAnswerSelect(option)}
+                    checked={checked}
+                    disabled={inputsDisabled}
+                  />
+                  {isGraded && (
+                    (orig.answer as string[]).includes(option) ? (
+                      <CheckCircle className="h-5 w-5 text-green-600" />
+                    ) : checked ? (
+                      <XCircle className="h-5 w-5 text-red-600" />
+                    ) : (
+                      <div className="h-5 w-5" />
+                    )
+                  )}
+                  <span>{option}</span>
+                </Label>
+              );
+            })}
           </div>
         );
-      case 'short-answer':
+
+      case "short-answer":
         return (
           <Input
             placeholder="Type your answer here..."
-            value={(answers[currentQuestionIndex] as string) || ""}
+            value={(ua as string) || ""}
             onChange={(e) => handleAnswerSelect(e.target.value)}
             disabled={inputsDisabled}
           />
         );
+
       default:
         return null;
     }
@@ -373,16 +412,19 @@ export function QuizInterface({ quizData, onTimeUpdate, isPractice }: { quizData
     <Card className="w-full max-w-3xl shadow-2xl">
       <CardHeader>
         {isPractice && !isGraded && (
-          <Alert variant="default" className="mb-4 bg-blue-50 border-blue-200 dark:bg-blue-950 dark:border-blue-800">
+          <Alert className="mb-4 bg-blue-50 border-blue-200 dark:bg-blue-950 dark:border-blue-800">
             <Beaker className="h-4 w-4 text-blue-500" />
-            <AlertTitle className="text-blue-800 dark:text-blue-300">Practice Mode</AlertTitle>
+            <AlertTitle className="text-blue-800 dark:text-blue-300">
+              Practice Mode
+            </AlertTitle>
             <AlertDescription className="text-blue-700 dark:text-blue-400">
               Your results will not be saved. Click &quot;Grade&quot; to see your score.
             </AlertDescription>
           </Alert>
         )}
+
         {isGraded && score && (
-          <Alert variant="default" className="mb-4 bg-indigo-50 border-indigo-200 dark:bg-indigo-950 dark:border-indigo-800">
+          <Alert className="mb-4 bg-indigo-50 border-indigo-200 dark:bg-indigo-950 dark:border-indigo-800">
             <AlertTitle className="text-indigo-800 dark:text-indigo-300 text-lg font-bold text-center">
               Your Score: {Math.round((score.correct / score.total) * 100)}% ({score.correct}/{score.total})
             </AlertTitle>
@@ -391,25 +433,30 @@ export function QuizInterface({ quizData, onTimeUpdate, isPractice }: { quizData
             </AlertDescription>
           </Alert>
         )}
+
         <div className="space-y-2">
           <Progress value={progress} className="w-full" />
           <CardDescription>
             Question {currentQuestionIndex + 1} of {processedQuestions.length}
           </CardDescription>
         </div>
-        <CardTitle className="pt-4 text-2xl font-headline">
-          {currentQuestion.question}
-        </CardTitle>
+
+        <CardTitle className="pt-4 text-2xl font-headline">{currentQuestion.question}</CardTitle>
+
         {currentQuestion.imageUrl && (
           <div className="relative mt-4 h-64 w-full">
-            <Image src={currentQuestion.imageUrl} alt={`Question ${currentQuestionIndex + 1}`} fill style={{objectFit: "contain"}} className="rounded-md"/>
+            <Image
+              src={currentQuestion.imageUrl}
+              alt={`Question ${currentQuestionIndex + 1}`}
+              fill
+              style={{ objectFit: "contain" }}
+              className="rounded-md"
+            />
           </div>
         )}
       </CardHeader>
 
-      <CardContent>
-        {renderAnswerOptions()}
-      </CardContent>
+      <CardContent>{renderAnswerOptions()}</CardContent>
 
       <CardFooter className="flex justify-between items-center">
         <div className="flex gap-2">
@@ -419,7 +466,7 @@ export function QuizInterface({ quizData, onTimeUpdate, isPractice }: { quizData
           {isGraded && wrongAnswerIndices.length > 0 && (
             <Button
               variant="outline"
-              onClick={() => navigateWrongAnswers('prev')}
+              onClick={() => navigateWrongAnswers("prev")}
               disabled={prevWrongDisabled}
             >
               Prev Wrong
@@ -433,14 +480,14 @@ export function QuizInterface({ quizData, onTimeUpdate, isPractice }: { quizData
               <Button
                 className="bg-accent text-accent-foreground hover:bg-accent/90"
                 onClick={handleGrade}
-                disabled={role === 'admin'}
+                disabled={role === "admin"}
               >
                 Grade
               </Button>
             ) : (
               <AlertDialog>
                 <AlertDialogTrigger asChild>
-                  <Button className="bg-accent text-accent-foreground hover:bg-accent/90" disabled={role === 'admin'}>
+                  <Button className="bg-accent text-accent-foreground hover:bg-accent/90" disabled={role === "admin"}>
                     Submit Quiz
                   </Button>
                 </AlertDialogTrigger>
@@ -453,7 +500,7 @@ export function QuizInterface({ quizData, onTimeUpdate, isPractice }: { quizData
                   </AlertDialogHeader>
                   <AlertDialogFooter>
                     <AlertDialogCancel>Cancel</AlertDialogCancel>
-                    <AlertDialogAction onClick={() => handleSubmit(false)}>Confirm & Submit</AlertDialogAction>
+                    <AlertDialogAction onClick={handleManualSubmit}>Confirm & Submit</AlertDialogAction>
                   </AlertDialogFooter>
                 </AlertDialogContent>
               </AlertDialog>
@@ -463,7 +510,7 @@ export function QuizInterface({ quizData, onTimeUpdate, isPractice }: { quizData
               {isGraded && wrongAnswerIndices.length > 0 && (
                 <Button
                   variant="outline"
-                  onClick={() => navigateWrongAnswers('next')}
+                  onClick={() => navigateWrongAnswers("next")}
                   disabled={nextWrongDisabled}
                 >
                   Next Wrong
