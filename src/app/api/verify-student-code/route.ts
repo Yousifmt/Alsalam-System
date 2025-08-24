@@ -1,30 +1,38 @@
+// src/app/api/students/route.ts
 import { NextResponse } from "next/server";
+import { collection, getDocs } from "firebase/firestore";
+import { db } from "@/lib/firebase"; // must export a Firestore instance
 
-// Force Node runtime so process.env works everywhere (dev/preview/prod)
 export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
+export const revalidate = 0;
+export const fetchCache = "force-no-store";
 
-export async function POST(req: Request) {
-  const { code } = await req.json();
+export async function GET() {
+  try {
+    const snap = await getDocs(collection(db, "users")); // change if your collection is different
+    const students = snap.docs.map((d) => {
+      const data = d.data() as any;
+      // prefer data.uid, else fall back to doc id
+      const uid = data.uid ?? d.id;
+      return {
+        uid,
+        name: data.name ?? "",
+        email: data.email ?? "",
+        classId: data.classId ?? null,
+        className: data.className ?? null,
+      };
+    });
 
-  const expected =
-    process.env.SIGNUP_STUDENT_CODE ??
-    (process.env.NODE_ENV !== "production" ? "sy0-701" : undefined); // dev fallback
-
-  if (!expected) {
     return NextResponse.json(
-      { ok: false, error: "Server misconfigured: SIGNUP_STUDENT_CODE is not set." },
-      { status: 500 }
+      { ok: true, students },
+      { headers: { "Cache-Control": "no-store" } }
+    );
+  } catch (err) {
+    console.error("[GET /api/students] error:", err);
+    return NextResponse.json(
+      { ok: false, error: "Failed to load students." },
+      { status: 500, headers: { "Cache-Control": "no-store" } }
     );
   }
-
-  const normalize = (s: unknown) => String(s ?? "").trim().toLowerCase();
-
-  if (normalize(code) === normalize(expected)) {
-    return NextResponse.json({ ok: true });
-  }
-
-  return NextResponse.json(
-    { ok: false, error: "Invalid student access code." },
-    { status: 401 }
-  );
 }
