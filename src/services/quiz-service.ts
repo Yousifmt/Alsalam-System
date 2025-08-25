@@ -14,9 +14,12 @@ import {
   where,
   serverTimestamp,
 } from "firebase/firestore";
-import type { Quiz, QuizResult, QuizSession } from "@/lib/types";
+import type { Quiz, QuizResult, QuizSession, ScoringConfig } from "@/lib/types";
 
 const quizzesCollection = collection(db, "quizzes");
+
+/* Only two scoring choices: 100% or 900 pts */
+const DEFAULT_SCORING: ScoringConfig = { mode: "percent" };
 
 /** Attach Firestore doc id without double 'id' */
 function withDocId<T extends object>(docId: string, data: T): T & { id: string } {
@@ -24,16 +27,38 @@ function withDocId<T extends object>(docId: string, data: T): T & { id: string }
   return { ...(rest as T), id: docId };
 }
 
+/** Normalize quiz when reading */
+function toQuiz(docId: string, data: any): Quiz {
+  const base = withDocId<Quiz>(docId, data as Quiz);
+  return {
+    ...base,
+    results: Array.isArray((data as any)?.results) ? (data as any).results : [],
+    shuffleQuestions: !!(data as any)?.shuffleQuestions,
+    shuffleAnswers: !!(data as any)?.shuffleAnswers,
+    archived: typeof (data as any)?.archived === "boolean" ? (data as any).archived : false,
+    scoring: (data as any)?.scoring ?? DEFAULT_SCORING,
+  };
+}
+
 // ====================== Admin ======================
 
 export async function createQuiz(quizData: Omit<Quiz, "id">): Promise<string> {
-  const ref = await addDoc(quizzesCollection, quizData);
+  const payload = {
+    ...quizData,
+    scoring: quizData.scoring ?? DEFAULT_SCORING,
+    archived: (quizData as any)?.archived ?? false,
+  };
+  const ref = await addDoc(quizzesCollection, payload);
   return ref.id;
 }
 
 export async function updateQuiz(id: string, quizData: Omit<Quiz, "id">): Promise<void> {
   const ref = doc(db, "quizzes", id);
-  await setDoc(ref, quizData);
+  const payload = {
+    ...quizData,
+    scoring: quizData.scoring ?? DEFAULT_SCORING,
+  };
+  await setDoc(ref, payload, { merge: true });
 }
 
 export async function deleteQuiz(id: string): Promise<void> {
@@ -45,7 +70,7 @@ export async function deleteQuiz(id: string): Promise<void> {
 
 export async function getQuizzes(): Promise<Quiz[]> {
   const snap = await getDocs(quizzesCollection);
-  return snap.docs.map(d => withDocId<Quiz>(d.id, d.data() as Quiz));
+  return snap.docs.map((d) => toQuiz(d.id, d.data()));
 }
 
 export async function getQuizzesForSearch(): Promise<Quiz[]> {
@@ -56,7 +81,7 @@ export async function getQuiz(id: string): Promise<Quiz | null> {
   const ref = doc(db, "quizzes", id);
   const snap = await getDoc(ref);
   if (!snap.exists()) return null;
-  return withDocId<Quiz>(snap.id, snap.data() as Quiz);
+  return toQuiz(snap.id, snap.data());
 }
 
 export async function getQuizForUser(quizId: string, userId: string): Promise<Quiz> {
@@ -81,12 +106,12 @@ export async function getQuizzesForUser(userId: string): Promise<Quiz[]> {
   const userSnap = await getDocs(userRef);
 
   const state = new Map<string, { status: Quiz["status"]; results: QuizResult[] }>();
-  userSnap.docs.forEach(d => {
+  userSnap.docs.forEach((d) => {
     const data = d.data() as { status: Quiz["status"]; results?: QuizResult[] };
     state.set(d.id, { status: data.status, results: data.results || [] });
   });
 
-  return master.map(m => {
+  return master.map((m) => {
     const u = state.get(m.id);
     const hasResults = !!u?.results?.length;
     return { ...m, status: hasResults ? "Completed" : u?.status || "Not Started", results: u?.results || [] };
@@ -114,10 +139,10 @@ export async function getAllResultsForQuiz(quizId: string): Promise<QuizResult[]
   const cg = query(collectionGroup(db, "quizzes"));
   const snap = await getDocs(cg);
   const out: QuizResult[] = [];
-  snap.forEach(d => {
+  snap.forEach((d) => {
     if (d.id !== quizId) return;
     const data = d.data() as { results?: QuizResult[] };
-    if (Array.isArray(data.results)) out.push(...data.results.filter(r => !r.isPractice));
+    if (Array.isArray(data.results)) out.push(...data.results.filter((r) => !r.isPractice));
   });
   return out;
 }
@@ -127,7 +152,7 @@ export async function getLatestPracticeAttempt(quizId: string, userId: string): 
   const qy = query(ref, where("quizId", "==", quizId));
   const snap = await getDocs(qy);
   if (snap.empty) return null;
-  const attempts = snap.docs.map(d => d.data() as QuizResult);
+  const attempts = snap.docs.map((d) => d.data() as QuizResult);
   attempts.sort((a, b) => b.date - a.date);
   return attempts[0];
 }
@@ -175,7 +200,12 @@ export async function startOrResumeActiveSession(
     }
 
     // Still in progress: ensure stable order
-    let order = data.order && data.order.length === questionIds.length ? data.order : (shuffleQuestions ? fyShuffle(questionIds) : [...questionIds]);
+    let order =
+      data.order && data.order.length === questionIds.length
+        ? data.order
+        : shuffleQuestions
+        ? fyShuffle(questionIds)
+        : [...questionIds];
     if (!data.order || data.order.length !== questionIds.length) {
       await updateDoc(ref, { order });
     }

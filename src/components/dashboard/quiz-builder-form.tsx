@@ -51,9 +51,10 @@ import {
   arrayMove,
   verticalListSortingStrategy,
 } from "@dnd-kit/sortable";
-  import { CSS } from "@dnd-kit/utilities";
+import { CSS } from "@dnd-kit/utilities";
 
 import type { Question, Quiz } from "@/lib/types";
+import type { ScoringConfig, ScoreMode } from "@/lib/types";
 import { useToast } from "@/hooks/use-toast";
 import { createQuiz, updateQuiz, deleteQuiz } from "@/services/quiz-service";
 import { uploadQuizImage } from "@/services/storage-service";
@@ -131,6 +132,9 @@ function parsePastedBlock(rawText: string): ParsedResult | null {
   if (!options.length) return null;
   return { question, options };
 }
+
+/* Two-option scoring only: 100% or 900 pts */
+const DEFAULT_SCORING: ScoringConfig = { mode: "percent" };
 
 function splitIntoBlocks(raw: string): string[] {
   const lines = raw.replace(/\r/g, "").split("\n").map((l) => l.trim());
@@ -228,6 +232,9 @@ export function QuizBuilderForm({ quiz }: { quiz?: Quiz }) {
   const [isDeleting, setIsDeleting] = useState(false);
   const [isImporting, setIsImporting] = useState(false);
 
+  // Only two choices: "percent" or "points900"
+  const [scoring, setScoring] = useState<ScoringConfig>(DEFAULT_SCORING);
+
   // autosave-to-draft state
   const [draftId, setDraftId] = useState<string | null>(
     quiz && (quiz as any).status === "Draft" ? quiz.id : null
@@ -251,6 +258,8 @@ export function QuizBuilderForm({ quiz }: { quiz?: Quiz }) {
     setTimeLimit(quiz.timeLimit || 0);
     setShuffleQuestions(quiz.shuffleQuestions);
     setShuffleAnswers(quiz.shuffleAnswers);
+    // hydrate scoring (default if missing)
+    setScoring(quiz.scoring ?? DEFAULT_SCORING);
   }, [quiz, isEditMode]);
 
   /* ------------------------------ Question CRUD ----------------------------- */
@@ -512,24 +521,23 @@ export function QuizBuilderForm({ quiz }: { quiz?: Quiz }) {
 
     const { normalized, skipped } = validateAndNormalize(finalQuestionsRaw);
 
-    
-// inside buildFinalPayload(status)
-const payload: Omit<Quiz, "id"> & { archived?: boolean } = {
-  title: (title || "").trim() || "Untitled Quiz",
-  description: (description || "").trim(),
-  questions: normalized,
-  status,
-  archived: String(status).toLowerCase() === "archived", // 👈 add this line
-  timeLimit: timeLimit > 0 ? timeLimit : undefined,
-  shuffleQuestions,
-  shuffleAnswers,
-  results: quiz?.results || [],
-};
+    const payload: Omit<Quiz, "id"> & { archived?: boolean } = {
+      title: (title || "").trim() || "Untitled Quiz",
+      description: (description || "").trim(),
+      questions: normalized,
+      status,
+      archived: String(status).toLowerCase() === "archived",
+      timeLimit: timeLimit > 0 ? timeLimit : undefined,
+      shuffleQuestions,
+      shuffleAnswers,
+      results: quiz?.results || [],
+      scoring, // <-- save the 100/900 choice
+    };
 
     return { payload, skipped };
   };
 
-  /* ------------------------- Autosave to Draft (NEW) ------------------------ */
+  /* ------------------------- Autosave to Draft ------------------------ */
 
   const hasContent = () => {
     const nonEmptyQs = questions.some(
@@ -550,18 +558,18 @@ const payload: Omit<Quiz, "id"> & { archived?: boolean } = {
 
     const { normalized } = validateAndNormalize(draftQuestions);
 
-    // inside buildDraftPayload()
-const payload: Omit<Quiz, "id"> & { archived?: boolean } = {
-  title: (title || "").trim() || "Untitled Quiz",
-  description: (description || "").trim(),
-  questions: normalized,
-  status: "Draft" as any,
-  archived: false, // 👈 add this line
-  timeLimit: timeLimit > 0 ? timeLimit : undefined,
-  shuffleQuestions,
-  shuffleAnswers,
-  results: quiz?.results || [],
-};
+    const payload: Omit<Quiz, "id"> & { archived?: boolean } = {
+      title: (title || "").trim() || "Untitled Quiz",
+      description: (description || "").trim(),
+      questions: normalized,
+      status: "Draft" as any,
+      archived: false,
+      timeLimit: timeLimit > 0 ? timeLimit : undefined,
+      shuffleQuestions,
+      shuffleAnswers,
+      results: quiz?.results || [],
+      scoring, // <-- keep in draft too
+    };
 
     return payload;
   };
@@ -569,7 +577,7 @@ const payload: Omit<Quiz, "id"> & { archived?: boolean } = {
   const autoSaveDraft = async () => {
     try {
       if (!hasContent()) return;
-      if (isSaving || isArchiving || isDeleting) return; // pause autosave during critical ops
+      if (isSaving || isArchiving || isDeleting) return;
       if (isEditMode && (quiz as any)?.status !== "Draft") return;
 
       setAutosavePending(true);
@@ -597,13 +605,24 @@ const payload: Omit<Quiz, "id"> & { archived?: boolean } = {
     }, 1200);
     return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [title, description, questions, timeLimit, shuffleQuestions, shuffleAnswers, isSaving, isArchiving, isDeleting]);
+  }, [
+    title,
+    description,
+    questions,
+    timeLimit,
+    shuffleQuestions,
+    shuffleAnswers,
+    scoring, // autosave when scale changes
+    isSaving,
+    isArchiving,
+    isDeleting,
+  ]);
 
   /* ------------------------------ Archive / Unarchive ------------------------------ */
 
   const handleArchive = async () => {
     if (!isEditMode && !draftId) {
-      // allow archiving a brand-new form: create as Archived
+      // allow archiving a brand-new form
     }
     setIsArchiving(true);
     try {
@@ -841,6 +860,26 @@ const payload: Omit<Quiz, "id"> & { archived?: boolean } = {
               <Label htmlFor="shuffle-answers">Shuffle Answer Options</Label>
             </div>
           </div>
+        </div>
+
+        {/* Grade scale (only 100% or 900 pts) */}
+        <div className="space-y-2 max-w-sm">
+          <Label htmlFor="grade-scale">Grade Scale</Label>
+          <Select
+            value={scoring.mode}
+            onValueChange={(v) => setScoring({ mode: v as ScoreMode })}
+          >
+            <SelectTrigger id="grade-scale">
+              <SelectValue placeholder="Choose grade scale" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="percent">100% (standard)</SelectItem>
+              <SelectItem value="points900">900 points (CompTIA)</SelectItem>
+            </SelectContent>
+          </Select>
+          <p className="text-xs text-muted-foreground">
+            Choose how final scores are displayed: as a percentage out of 100, or as points out of 900 (CompTIA-style).
+          </p>
         </div>
       </div>
 

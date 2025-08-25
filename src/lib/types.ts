@@ -1,67 +1,89 @@
+// ========================= Core Types =========================
 
-export type QuestionType = 'multiple-choice' | 'checkbox' | 'short-answer';
+export type QuestionType = "multiple-choice" | "checkbox" | "short-answer";
+
+/** Only two display modes:
+ * - "percent"   → show scores as 0–100%
+ * - "points900" → show scores as 0–900 points (CompTIA-style)
+ */
+export type ScoreMode = "percent" | "points900";
+
+// ========================= Quiz Content =========================
 
 export interface Question {
   id: string;
   question: string;
   type: QuestionType;
   options: string[];
-  // answer is a string for multiple-choice and short-answer, and a string[] for checkboxes
-  answer: string | string[]; 
+  // string for multiple-choice / short-answer; string[] for checkbox
+  answer: string | string[];
   imageUrl?: string | null;
 }
 
+// ========================= Attempts & Sessions =========================
+
 export interface QuizResult {
-    date: number; // Timestamp of the attempt
-    score: number;
-    total: number;
-    answeredQuestions: {
-        question: string;
-        userAnswer: string | string[];
-        correctAnswer: string | string[];
-        isCorrect: boolean;
-    }[];
-    isPractice?: boolean;
+  date: number; // ms timestamp
+  score: number; // number of correct answers
+  total: number; // total questions
+  answeredQuestions: {
+    question: string;
+    userAnswer: string | string[];
+    correctAnswer: string | string[];
+    isCorrect: boolean;
+  }[];
+  isPractice?: boolean;
 }
+
 export interface QuizSession {
   startedAt: number;
   order: string[];
   answersByQuestionId: Record<string, string | string[]>;
   lastSavedAt: number;
   currentIndex: number;
-  submittedAt?: number;   // <-- important
+  submittedAt?: number; // set when user submits
 }
 
+// ========================= Scoring Config (simple) =========================
 
+export interface ScoringConfig {
+  mode: ScoreMode; // "percent" or "points900"
+}
 
-
+// ========================= Quiz & Related =========================
 
 export interface Quiz {
   id: string;
   title: string;
   description?: string;
   questions: Question[];
-  status: 'Not Started' | 'In Progress' | 'Completed'; // Represents the student's status, not master quiz.
-  timeLimit?: number; // in minutes
+  status: "Not Started" | "In Progress" | "Completed"; // student's status
+  timeLimit?: number; // minutes
   shuffleQuestions: boolean;
   shuffleAnswers: boolean;
-  results?: QuizResult[]; // Store multiple results for a student
+  results?: QuizResult[]; // multiple attempts per student
+
+  // optional metadata
+  scoring?: ScoringConfig; // how to display final grade (100% or 900 pts)
+  archived?: boolean;
 }
 
-export interface UserQuiz extends Omit<Quiz, 'id'> {
-    userId: string;
-    quizId: string;
+export interface UserQuiz extends Omit<Quiz, "id"> {
+  userId: string;
+  quizId: string;
 }
+
+// ========================= Misc =========================
 
 export interface ManagedFile {
-    name: string;
-    size: string;
-    url: string;
-    path: string;
+  name: string;
+  size: string;
+  url: string;
+  path: string;
 }
 
 export interface Student {
-    uid: string;
-    name: string;
-    email: string;
+  uid: string;
+  name: string;
+  email: string;
 }
