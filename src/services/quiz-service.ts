@@ -13,6 +13,8 @@ import {
   query,
   where,
   serverTimestamp,
+  orderBy,
+  writeBatch,
 } from "firebase/firestore";
 import type { Quiz, QuizResult, QuizSession, ScoringConfig } from "@/lib/types";
 
@@ -47,10 +49,13 @@ export async function createQuiz(quizData: Omit<Quiz, "id">): Promise<string> {
     ...quizData,
     scoring: quizData.scoring ?? DEFAULT_SCORING,
     archived: (quizData as any)?.archived ?? false,
+    // ⬇️ default order so new quizzes fall to the end
+    order: typeof (quizData as any)?.order === "number" ? (quizData as any).order : Date.now(),
   };
   const ref = await addDoc(quizzesCollection, payload);
   return ref.id;
 }
+
 
 export async function updateQuiz(id: string, quizData: Omit<Quiz, "id">): Promise<void> {
   const ref = doc(db, "quizzes", id);
@@ -69,9 +74,18 @@ export async function deleteQuiz(id: string): Promise<void> {
 // ==================== Reads ====================
 
 export async function getQuizzes(): Promise<Quiz[]> {
-  const snap = await getDocs(quizzesCollection);
-  return snap.docs.map((d) => toQuiz(d.id, d.data()));
+  const snap = await getDocs(quizzesCollection); // no orderBy here
+  const list = snap.docs.map((d) => toQuiz(d.id, d.data()));
+  // Same sort you already use in the page
+  return list.sort((a: any, b: any) => {
+    const ao = typeof a.order === "number" ? a.order : 1e9;
+    const bo = typeof b.order === "number" ? b.order : 1e9;
+    if (ao !== bo) return ao - bo;
+    return a.title.localeCompare(b.title);
+  });
 }
+
+
 
 export async function getQuizzesForSearch(): Promise<Quiz[]> {
   return getQuizzes();
@@ -116,6 +130,13 @@ export async function getQuizzesForUser(userId: string): Promise<Quiz[]> {
     const hasResults = !!u?.results?.length;
     return { ...m, status: hasResults ? "Completed" : u?.status || "Not Started", results: u?.results || [] };
   });
+}
+export async function saveQuizOrder(pairs: Array<{ id: string; order: number }>) {
+  const batch = writeBatch(db);
+  for (const { id, order } of pairs) {
+    batch.update(doc(db, "quizzes", id), { order });
+  }
+  await batch.commit();
 }
 
 // =================== Results ===================

@@ -3,24 +3,52 @@
 import Link from "next/link";
 import { Button } from "@/components/ui/button";
 import {
-  Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle,
+  Card,
+  CardContent,
+  CardDescription,
+  CardFooter,
+  CardHeader,
+  CardTitle,
 } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import {
-  PlusCircle, ArrowRight, History, BarChart, Percent, Edit, Loader2, GripVertical,
+  PlusCircle,
+  ArrowRight,
+  History,
+  BarChart,
+  Percent,
+  Edit,
+  Loader2,
+  GripVertical,
 } from "lucide-react";
 import { useAuth } from "@/context/auth-context";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import type { Quiz } from "@/lib/types";
 import {
-  getQuizzesForUser, getQuizzes, getAllResultsForQuiz,
+  getQuizzesForUser,
+  getQuizzes,
+  getAllResultsForQuiz,
+  saveQuizOrder,
 } from "@/services/quiz-service";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useRouter } from "next/navigation";
 
-import {
-  DragDropContext, Droppable, Draggable, type DropResult,
-} from "@hello-pangea/dnd";
+import dynamic from "next/dynamic";
+import type { DropResult } from "@hello-pangea/dnd";
+
+// DnD must be client-only (no SSR)
+const DragDropContext = dynamic(
+  () => import("@hello-pangea/dnd").then((m) => m.DragDropContext),
+  { ssr: false }
+);
+const Droppable = dynamic(
+  () => import("@hello-pangea/dnd").then((m) => m.Droppable),
+  { ssr: false }
+);
+const Draggable = dynamic(
+  () => import("@hello-pangea/dnd").then((m) => m.Draggable),
+  { ssr: false }
+);
 
 const getBadgeVariant = (status: string) => {
   switch (status) {
@@ -67,13 +95,20 @@ function QuizCardSkeleton() {
   );
 }
 
+function Grid({ children }: { children: ReactNode }) {
+  return <div className="grid gap-6 md:grid-cols-2 xl:grid-cols-3">{children}</div>;
+}
+
 export default function QuizzesPage() {
   const { role, user } = useAuth();
   const router = useRouter();
+
   const [quizzes, setQuizzes] = useState<Quiz[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadingAction, setLoadingAction] = useState<string | null>(null);
   const [averageScores, setAverageScores] = useState<Record<string, number | null>>({});
+  const [savingOrder, setSavingOrder] = useState(false);
+  const [beforeDnD, setBeforeDnD] = useState<Quiz[] | null>(null);
 
   const roleReady = role === "admin" || role === "student";
 
@@ -144,18 +179,36 @@ export default function QuizzesPage() {
     const { source, destination } = result;
     if (source.index === destination.index) return;
 
-    const items = Array.from(quizzes);
-    const [moved] = items.splice(source.index, 1);
-    items.splice(destination.index, 0, moved);
-    setQuizzes(items);
-  };
+    setBeforeDnD(quizzes);
 
-  const Grid = useMemo(
-    () => ({ children }: { children: React.ReactNode }) => (
-      <div className="grid gap-6 md:grid-cols-2 xl:grid-cols-3">{children}</div>
-    ),
-    []
-  );
+    // Optimistic re-order
+    const next = Array.from(quizzes);
+    const [moved] = next.splice(source.index, 1);
+    next.splice(destination.index, 0, moved);
+    setQuizzes(next);
+
+    // Compute stable order values and persist
+    const pairs = next.map((q, i) => ({ id: q.id, order: (i + 1) * 1000 }));
+
+    try {
+      setSavingOrder(true);
+      await saveQuizOrder(pairs);
+
+      // Keep local state consistent with saved order
+      setQuizzes((prev) =>
+        prev.map((q) => {
+          const p = pairs.find((x) => x.id === q.id);
+          return p ? ({ ...q, order: p.order } as Quiz) : q;
+        })
+      );
+    } catch (e) {
+      console.error("Failed to save order:", e);
+      if (beforeDnD) setQuizzes(beforeDnD); // rollback
+    } finally {
+      setSavingOrder(false);
+      setBeforeDnD(null);
+    }
+  };
 
   // Secondary safety net
   const quizzesForRender = role === "admin" ? quizzes : quizzes.filter((q) => !isArchived(q));
@@ -201,7 +254,12 @@ export default function QuizzesPage() {
                       loadingAction === `${action}-${quiz.id}`;
 
                     return (
-                      <Draggable key={quiz.id} draggableId={quiz.id} index={index}>
+                      <Draggable
+                        key={quiz.id}
+                        draggableId={quiz.id}
+                        index={index}
+                        isDragDisabled={savingOrder}
+                      >
                         {(drag) => (
                           <Card
                             ref={drag.innerRef}
@@ -213,6 +271,7 @@ export default function QuizzesPage() {
                               className="absolute top-3 right-3 opacity-60 hover:opacity-100 transition"
                               aria-label="Drag to reorder"
                               title="Drag to reorder"
+                              disabled={savingOrder}
                             >
                               <GripVertical className="h-4 w-4" />
                             </button>

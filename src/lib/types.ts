@@ -66,6 +66,7 @@ export interface Quiz {
   // optional metadata
   scoring?: ScoringConfig; // how to display final grade (100% or 900 pts)
   archived?: boolean;
+  order?: number;
 }
 
 export interface UserQuiz extends Omit<Quiz, "id"> {
