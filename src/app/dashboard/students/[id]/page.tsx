@@ -5,8 +5,8 @@ import { useEffect, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { getStudent, type Student } from "@/services/user-service";
 import { getQuizzesForUser } from "@/services/quiz-service";
-import type { Question, Quiz } from "@/lib/types";
-import { Loader2, ArrowLeft, BarChart, History, CheckCircle, XCircle } from "lucide-react";
+import type { Question, Quiz, QuizResult } from "@/lib/types";
+import { Loader2, ArrowLeft, BarChart, History, CheckCircle, XCircle, Award } from "lucide-react";
 import { StudentStats } from "@/components/dashboard/student-stats";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -50,6 +50,10 @@ const AnswerOption = ({
   );
 };
 
+interface LatestAttempt extends QuizResult {
+  quizTitle: string;
+}
+
 export default function StudentDetailPage() {
     const params = useParams();
     const id = params.id as string;
@@ -57,6 +61,7 @@ export default function StudentDetailPage() {
     const [student, setStudent] = useState<Student | null>(null);
     const [quizzes, setQuizzes] = useState<Quiz[]>([]);
     const [masterQuizzes, setMasterQuizzes] = useState<Record<string, Quiz>>({});
+    const [latestAttempt, setLatestAttempt] = useState<LatestAttempt | null>(null);
     const [loading, setLoading] = useState(true);
     const { setIsLoading } = useLoading();
     const router = useRouter();
@@ -73,8 +78,26 @@ export default function StudentDetailPage() {
                     getQuizzesForUser(id)
                 ]);
                 setStudent(studentData);
-                const attemptedQuizzes = quizzesData.filter(q => q.results && q.results.length > 0);
+
+                // Filter out quizzes with no results and also practice results
+                const attemptedQuizzes = quizzesData.map(q => ({
+                    ...q,
+                    results: q.results?.filter(r => !r.isPractice) || []
+                })).filter(q => q.results.length > 0);
+                
                 setQuizzes(attemptedQuizzes);
+
+                // Find the latest attempt across all quizzes
+                let mostRecent: LatestAttempt | null = null;
+                attemptedQuizzes.forEach(quiz => {
+                    quiz.results.forEach(result => {
+                        if (!mostRecent || result.date > mostRecent.date) {
+                            mostRecent = { ...result, quizTitle: quiz.title };
+                        }
+                    });
+                });
+                setLatestAttempt(mostRecent);
+
 
                 // Fetch master quiz data for all attempted quizzes to get all options
                 const masterQuizData: Record<string, Quiz> = {};
@@ -140,10 +163,39 @@ export default function StudentDetailPage() {
                 <p className="text-muted-foreground">{student.email}</p>
             </div>
 
-            <StudentStats userId={id} />
+            <div className="grid gap-6 md:grid-cols-2">
+                 {latestAttempt ? (
+                    <Card>
+                        <CardHeader>
+                            <CardTitle className="flex items-center gap-2"><Award className="text-accent" /> Last Quiz Attempt</CardTitle>
+                            <CardDescription>Most recent official quiz submission.</CardDescription>
+                        </CardHeader>
+                        <CardContent className="text-center">
+                            <p className="text-5xl font-bold text-primary">{Math.round((latestAttempt.score / latestAttempt.total) * 100)}%</p>
+                             <p className="text-lg font-semibold mt-2">{latestAttempt.quizTitle}</p>
+                            <p className="text-sm text-muted-foreground">{new Date(latestAttempt.date).toLocaleString()}</p>
+                        </CardContent>
+                    </Card>
+                ) : (
+                     <Card>
+                        <CardHeader>
+                            <CardTitle className="flex items-center gap-2"><Award className="text-muted-foreground" /> Last Quiz Attempt</CardTitle>
+                        </CardHeader>
+                        <CardContent className="text-center text-muted-foreground p-8">
+                            <p>No official quiz attempts have been recorded yet.</p>
+                        </CardContent>
+                    </Card>
+                )}
+                 {/* This space can be used for another summary card in the future */}
+                <div />
+            </div>
             
             <div>
-                <h2 className="text-2xl font-bold font-headline mb-4">Quiz History</h2>
+                <StudentStats userId={id} />
+            </div>
+            
+            <div>
+                <h2 className="text-2xl font-bold font-headline mb-4">Official Quiz History</h2>
                 {quizzes.length > 0 ? (
                     <div className="space-y-4">
                         {quizzes.map(quiz => (
