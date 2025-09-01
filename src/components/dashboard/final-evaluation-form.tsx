@@ -1,3 +1,4 @@
+// src/components/dashboard/final-evaluation-form.tsx
 "use client";
 
 import React, { useState } from "react";
@@ -32,9 +33,8 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { format } from "date-fns";
 import { Calendar } from "@/components/ui/calendar";
 import { saveFinalEvaluation } from "@/services/final-evaluation-service";
-import { generateEvaluationNotes } from "@/ai/flows/generate-evaluation-notes";
 
-// ----- Schema -----
+// ---------------- Schema ----------------
 const evaluationCriterionSchema = z.object({
   score: z.coerce.number().min(1).max(5),
   notes: z.string().optional(),
@@ -78,7 +78,7 @@ const finalEvaluationSchema = z.object({
 
 type FinalEvaluationFormData = z.infer<typeof finalEvaluationSchema>;
 
-// ----- Criteria (typed) -----
+// ---------------- Criteria (typed) ----------------
 const section1Criteria = [
   { id: "cybersecurityPrinciples", name: "فهم مبادئ الأمن السيبراني" },
   { id: "threatTypes", name: "التعرف على أنواع التهديدات السيبرانية" },
@@ -109,7 +109,6 @@ const section4Criteria = [
   { id: "clarity", name: "توصيل المعلومة بوضوح" },
 ] as const;
 
-// ✅ allCriteria (was missing)
 const allCriteria = {
   technicalSkills: section1Criteria,
   analyticalSkills: section2Criteria,
@@ -117,7 +116,6 @@ const allCriteria = {
   communicationSkills: section4Criteria,
 } as const;
 
-// unions for template-literal paths
 type TechnicalId = typeof section1Criteria[number]["id"];
 type AnalyticalId = typeof section2Criteria[number]["id"];
 type BehavioralId = typeof section3Criteria[number]["id"];
@@ -129,16 +127,32 @@ type CriterionCorePath =
   | `behavioralSkills.${BehavioralId}`
   | `communicationSkills.${CommunicationId}`;
 
-// ----- UI labels -----
-const overallRatings: FinalEvaluation["overallRating"][] = [
-  "Excellent",
-  "Very Good",
-  "Good",
-  "Acceptable",
-  "Needs Improvement",
-];
+// ---------------- Path helper (type-safe) ----------------
+function isOneOf<T extends readonly string[]>(arr: T, v: string): v is T[number] {
+  return (arr as readonly string[]).includes(v);
+}
+function toPath(id: string): Path<FinalEvaluationFormData> | null {
+  const [section, key] = id.split(".") as [string, string];
 
-const overallRatingsArabic: Record<FinalEvaluation["overallRating"], string> = {
+  if (section === "technicalSkills" && isOneOf(section1Criteria.map(c => c.id) as unknown as readonly string[], key)) {
+    return `technicalSkills.${key}.notes` as Path<FinalEvaluationFormData>;
+  }
+  if (section === "analyticalSkills" && isOneOf(section2Criteria.map(c => c.id) as unknown as readonly string[], key)) {
+    return `analyticalSkills.${key}.notes` as Path<FinalEvaluationFormData>;
+  }
+  if (section === "behavioralSkills" && isOneOf(section3Criteria.map(c => c.id) as unknown as readonly string[], key)) {
+    return `behavioralSkills.${key}.notes` as Path<FinalEvaluationFormData>;
+  }
+  if (section === "communicationSkills" && isOneOf(section4Criteria.map(c => c.id) as unknown as readonly string[], key)) {
+    return `communicationSkills.${key}.notes` as Path<FinalEvaluationFormData>;
+  }
+  return null;
+}
+
+// ---------------- Arabic labels (typed) ----------------
+const RATINGS = ["Excellent", "Very Good", "Good", "Acceptable", "Needs Improvement"] as const;
+type Rating = typeof RATINGS[number];
+const overallRatingsArabic: Record<Rating, string> = {
   Excellent: "ممتاز",
   "Very Good": "جيد جدًا",
   Good: "جيد",
@@ -146,19 +160,15 @@ const overallRatingsArabic: Record<FinalEvaluation["overallRating"], string> = {
   "Needs Improvement": "يحتاج إلى تحسين",
 };
 
-const finalRecommendations: FinalEvaluation["finalRecommendation"][] = [
-  "Ready for Security+ exam",
-  "Needs review before exam",
-  "Re-study recommended",
-];
-
-const finalRecommendationsArabic: Record<FinalEvaluation["finalRecommendation"], string> = {
+const RECS = ["Ready for Security+ exam", "Needs review before exam", "Re-study recommended"] as const;
+type Rec = typeof RECS[number];
+const finalRecommendationsArabic: Record<Rec, string> = {
   "Ready for Security+ exam": "المتدرب جاهز لتقديم الإمتحان",
   "Needs review before exam": "يحتاج إلى مراجعة قبل دخول الإمتحان",
   "Re-study recommended": "يُنصح بإعادة بعض الأجزاء لتعزيز الفهم",
 };
 
-// ----- Row (type-safe Controller names) -----
+// ---------------- UI row ----------------
 function CriterionRow({
   control,
   corePath,
@@ -218,6 +228,7 @@ function CriterionRow({
   );
 }
 
+// ---------------- Component ----------------
 export function FinalEvaluationForm({ student }: { student: Student }) {
   const router = useRouter();
   const { toast } = useToast();
@@ -255,6 +266,7 @@ export function FinalEvaluationForm({ student }: { student: Student }) {
       },
     });
 
+  // ---- Generate notes via API route (no server import) ----
   const handleGenerateNotes = async () => {
     setIsGeneratingNotes(true);
     try {
@@ -270,20 +282,40 @@ export function FinalEvaluationForm({ student }: { student: Student }) {
         }))
       );
 
-      const result = await generateEvaluationNotes({ criteria: criteriaForAI });
-
-      // ✅ set the *.notes path explicitly
-      result.notes.forEach((n) => {
-        const notePath = `${n.id}.notes` as Path<FinalEvaluationFormData>;
-        setValue(notePath, n.note as any);
+      const res = await fetch("/api/ai/generate-evaluation-notes", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ criteria: criteriaForAI }),
+        cache: "no-store",
       });
 
-      toast({ title: "Notes Generated", description: "AI-powered notes have been filled in." });
-    } catch (error) {
+      const contentType = res.headers.get("content-type") || "";
+      if (!contentType.includes("application/json")) {
+        const text = await res.text();
+        throw new Error(`Unexpected response (${res.status} ${res.statusText}). Body: ${text.slice(0, 300)}`);
+      }
+
+      const data: {
+        ok: boolean;
+        result?: { notes: { id: string; note: string }[] };
+        error?: string;
+      } = await res.json();
+
+      if (!res.ok || !data.ok || !data.result?.notes) {
+        throw new Error(data?.error || `HTTP ${res.status}`);
+      }
+
+      data.result.notes.forEach((n) => {
+        const path = toPath(n.id);
+        if (path) setValue(path, n.note);
+      });
+
+      toast({ title: "Notes Generated", description: "تم تعبئة الملاحظات تلقائيًا." });
+    } catch (error: any) {
       console.error("Failed to generate notes:", error);
       toast({
         title: "Error",
-        description: "Failed to generate AI notes. Please try again.",
+        description: String(error?.message ?? error),
         variant: "destructive",
       });
     } finally {
@@ -291,14 +323,14 @@ export function FinalEvaluationForm({ student }: { student: Student }) {
     }
   };
 
+  // ---- Save ----
   const onSaveSubmit = async (data: FinalEvaluationFormData) => {
     setIsSubmitting(true);
-
     const { trainingPeriodStart, trainingPeriodEnd, ...rest } = data;
 
     const evaluationData: Omit<FinalEvaluation, "id"> = {
       ...rest,
-      type: "final", // required by your type
+      type: "final",
       studentId: student.uid,
       studentName: student.name,
       date: Date.now(),
@@ -493,7 +525,7 @@ export function FinalEvaluationForm({ student }: { student: Student }) {
               name="overallRating"
               render={({ field }) => (
                 <RadioGroup onValueChange={field.onChange} value={field.value} className="flex flex-wrap gap-x-6 gap-y-2">
-                  {overallRatings.map((rating) => (
+                  {RATINGS.map((rating) => (
                     <div key={rating} className="flex items-center space-x-2 space-x-reverse">
                       <RadioGroupItem value={rating} id={`rating-${rating}`} />
                       <Label htmlFor={`rating-${rating}`} className="pr-2">
@@ -516,7 +548,7 @@ export function FinalEvaluationForm({ student }: { student: Student }) {
               name="finalRecommendation"
               render={({ field }) => (
                 <RadioGroup onValueChange={field.onChange} value={field.value} className="space-y-1">
-                  {finalRecommendations.map((rec) => (
+                  {RECS.map((rec) => (
                     <div key={rec} className="flex items-center space-x-2 space-x-reverse">
                       <RadioGroupItem value={rec} id={`rec-${rec}`} />
                       <Label htmlFor={`rec-${rec}`} className="pr-2">
