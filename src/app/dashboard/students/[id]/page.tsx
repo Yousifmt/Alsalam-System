@@ -6,7 +6,7 @@ import { useParams, useRouter } from "next/navigation";
 import { getStudent, type Student } from "@/services/user-service";
 import { getQuizzesForUser } from "@/services/quiz-service";
 import type { Question, Quiz, QuizResult } from "@/lib/types";
-import { Loader2, ArrowLeft, BarChart, History, CheckCircle, XCircle, Award } from "lucide-react";
+import { Loader2, ArrowLeft, BarChart, History, CheckCircle, XCircle, Award, FilePen, List, ShieldCheck } from "lucide-react";
 import { StudentStats } from "@/components/dashboard/student-stats";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -153,12 +153,34 @@ export default function StudentDetailPage() {
     return (
         <div className="space-y-8">
             <div>
-                <Button asChild variant="outline" size="sm" className="mb-4">
-                     <Link href="/dashboard" onClick={handleBackClick}>
-                        <ArrowLeft className="mr-2 h-4 w-4" />
-                        Back to All Students
-                    </Link>
-                </Button>
+                <div className="flex justify-between items-start mb-4">
+                     <Button asChild variant="outline" size="sm">
+                         <Link href="/dashboard" onClick={handleBackClick}>
+                            <ArrowLeft className="mr-2 h-4 w-4" />
+                            Back to All Students
+                        </Link>
+                    </Button>
+                    <div className="flex gap-2">
+                        <Button asChild variant="outline">
+                            <Link href={`/dashboard/students/${id}/evaluations`}>
+                                <List className="mr-2 h-4 w-4"/>
+                                View Evaluations
+                            </Link>
+                        </Button>
+                        <Button asChild>
+                            <Link href={`/dashboard/students/${id}/evaluation`}>
+                                <FilePen className="mr-2 h-4 w-4"/>
+                                New Daily Evaluation
+                            </Link>
+                        </Button>
+                        <Button asChild>
+                            <Link href={`/dashboard/students/${id}/final-evaluation`}>
+                                <ShieldCheck className="mr-2 h-4 w-4"/>
+                                New Final Evaluation
+                            </Link>
+                        </Button>
+                    </div>
+                </div>
                 <h1 className="text-3xl font-bold font-headline">{student.name}</h1>
                 <p className="text-muted-foreground">{student.email}</p>
             </div>

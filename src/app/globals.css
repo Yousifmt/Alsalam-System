@@ -88,3 +88,52 @@ body {
     @apply bg-background text-foreground;
   }
 }
+
+@media print {
+  body {
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+    background: white;
+    color: black;
+  }
+  
+  /* Hide all non-essential UI elements */
+  header, [data-sidebar="sidebar"], .print-hidden {
+    display: none !important;
+  }
+
+  main {
+    padding: 0 !important;
+    margin: 0 !important;
+    overflow: visible !important;
+  }
+
+  .print\:shadow-none {
+    box-shadow: none;
+  }
+  .print\:border-none {
+    border: none;
+  }
+  
+  .print\:grid-cols-12 {
+    grid-template-columns: repeat(12, minmax(0, 1fr));
+  }
+
+  .print\:col-span-4 {
+    grid-column: span 4 / span 4;
+  }
+  
+  #final-evaluation-section-2,
+  #final-evaluation-section-4 {
+      page-break-before: always;
+  }
+
+  /* This targets the back button's container specifically on the evaluation page */
+  main > .space-y-6 > div:first-child {
+      display: none;
+  }
+
+  .print\:hidden {
+      display: none;
+  }
+}

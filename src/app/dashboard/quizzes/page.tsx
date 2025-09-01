@@ -1,16 +1,21 @@
+// FILE: src/app/dashboard/quizzes/page.tsx
 "use client";
 
 import Link from "next/link";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
+import { doc, getDoc, updateDoc } from "firebase/firestore";
+import { db } from "@/lib/firebase"; // client Firestore instance
+import { useAuth } from "@/context/auth-context";
+
 import { Button } from "@/components/ui/button";
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardFooter,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Skeleton } from "@/components/ui/skeleton";
+
 import {
   PlusCircle,
   ArrowRight,
@@ -20,37 +25,37 @@ import {
   Edit,
   Loader2,
   GripVertical,
+  Shield,
+  Cpu,
 } from "lucide-react";
-import { useAuth } from "@/context/auth-context";
-import { useEffect, useState, type ReactNode } from "react";
-import type { Quiz } from "@/lib/types";
-import {
-  getQuizzesForUser,
-  getQuizzes,
-  getAllResultsForQuiz,
-  saveQuizOrder,
-} from "@/services/quiz-service";
-import { Skeleton } from "@/components/ui/skeleton";
-import { useRouter } from "next/navigation";
 
 import dynamic from "next/dynamic";
 import type { DropResult } from "@hello-pangea/dnd";
 
-// DnD must be client-only (no SSR)
-const DragDropContext = dynamic(
-  () => import("@hello-pangea/dnd").then((m) => m.DragDropContext),
-  { ssr: false }
-);
-const Droppable = dynamic(
-  () => import("@hello-pangea/dnd").then((m) => m.Droppable),
-  { ssr: false }
-);
-const Draggable = dynamic(
-  () => import("@hello-pangea/dnd").then((m) => m.Draggable),
-  { ssr: false }
-);
+import type { Quiz } from "@/lib/types";
+import { getQuizzesForUser, getQuizzes, getAllResultsForQuiz, saveQuizOrder } from "@/services/quiz-service";
 
-const getBadgeVariant = (status: string) => {
+const DragDropContext = dynamic(() => import("@hello-pangea/dnd").then((m) => m.DragDropContext), { ssr: false });
+const Droppable = dynamic(() => import("@hello-pangea/dnd").then((m) => m.Droppable), { ssr: false });
+const Draggable = dynamic(() => import("@hello-pangea/dnd").then((m) => m.Draggable), { ssr: false });
+
+/* ────────────────────────────────────────────────────────────────────────────
+   Course types & password map
+   (local aliases so we don't depend on lib/types changes)
+──────────────────────────────────────────────────────────────────────────── */
+type CourseTag = "security+" | "a+" | "unassigned";
+type StudentCourseTag = "security+" | "a+";
+type AdminFilter = "all" | "security+" | "a+";
+
+const COURSE_PASSWORDS: Record<StudentCourseTag, string> = {
+  "security+": "sy0-701",
+  "a+": "202-1201",
+};
+
+/* ────────────────────────────────────────────────────────────────────────────
+   UI helpers
+──────────────────────────────────────────────────────────────────────────── */
+function getBadgeVariant(status: string) {
   switch (status) {
     case "Completed":
       return "default";
@@ -61,21 +66,12 @@ const getBadgeVariant = (status: string) => {
     default:
       return "outline";
   }
-};
+}
 
-// Robust archived detector (now also checks the explicit `archived` flag)
 const isArchived = (q: any) => {
   if (q?.archived === true) return true;
-  const s = (q?.status ?? q?.state ?? q?.lifecycle ?? "")
-    .toString()
-    .trim()
-    .toLowerCase();
-  return (
-    s === "archived" ||
-    s === "archive" ||
-    q?.isArchived === true ||
-    q?.deleted === true
-  );
+  const s = (q?.status ?? q?.state ?? q?.lifecycle ?? "").toString().trim().toLowerCase();
+  return s === "archived" || s === "archive" || q?.isArchived === true || q?.deleted === true;
 };
 
 function QuizCardSkeleton() {
@@ -99,9 +95,13 @@ function Grid({ children }: { children: ReactNode }) {
   return <div className="grid gap-6 md:grid-cols-2 xl:grid-cols-3">{children}</div>;
 }
 
+/* ────────────────────────────────────────────────────────────────────────────
+   Page
+──────────────────────────────────────────────────────────────────────────── */
 export default function QuizzesPage() {
-  const { role, user } = useAuth();
   const router = useRouter();
+  const params = useSearchParams();
+  const { role, user } = useAuth();
 
   const [quizzes, setQuizzes] = useState<Quiz[]>([]);
   const [loading, setLoading] = useState(true);
@@ -110,8 +110,84 @@ export default function QuizzesPage() {
   const [savingOrder, setSavingOrder] = useState(false);
   const [beforeDnD, setBeforeDnD] = useState<Quiz[] | null>(null);
 
+  // STUDENT: first-visit selection
+  const [studentCourse, setStudentCourse] = useState<StudentCourseTag | null>(null);
+  const [showChooser, setShowChooser] = useState(false);
+  const [pwDialogOpen, setPwDialogOpen] = useState(false);
+  const [pwInput, setPwInput] = useState("");
+  const [pendingCourse, setPendingCourse] = useState<StudentCourseTag | null>(null);
+  const [pwSubmitting, setPwSubmitting] = useState(false);
+
+  // ADMIN: filter
+  const [adminFilter, setAdminFilter] = useState<AdminFilter>("all");
+
   const roleReady = role === "admin" || role === "student";
 
+  // If redirected with choose=1, force chooser
+  useEffect(() => {
+    if (params.get("choose") === "1") setShowChooser(true);
+  }, [params]);
+
+  // Load quizzes + user courseTag
+  useEffect(() => {
+    const run = async () => {
+      if (!roleReady || !user) return;
+      setLoading(true);
+      try {
+        const fetched = role === "admin" ? await getQuizzes() : await getQuizzesForUser(user.uid);
+        setQuizzes(fetched);
+
+        if (role === "admin") {
+          const scores: Record<string, number | null> = {};
+          for (const q of fetched) {
+            const results = await getAllResultsForQuiz(q.id);
+            scores[q.id] = results.length
+              ? Math.round(results.reduce((acc, r) => acc + (r.score / r.total) * 100, 0) / results.length)
+              : null;
+          }
+          setAverageScores(scores);
+        } else {
+          // student: determine courseTag
+          const snap = await getDoc(doc(db, "users", user.uid));
+          const data: any = snap.exists() ? snap.data() : {};
+          const c = data.courseTag as StudentCourseTag | undefined;
+          if (c) {
+            setStudentCourse(c);
+            setShowChooser(false);
+          } else {
+            setStudentCourse(null);
+            setShowChooser(true);
+          }
+        }
+      } catch (e) {
+        console.error(e);
+      } finally {
+        setLoading(false);
+      }
+    };
+    run();
+  }, [roleReady, role, user]);
+
+  // ADMIN filtered list
+  const adminQuizzes = useMemo(() => {
+    if (adminFilter === "all") return quizzes;
+    return quizzes.filter((q) => (q.course ?? "unassigned") === adminFilter);
+  }, [quizzes, adminFilter]);
+
+  // STUDENT visible list:
+  //  - always include quizzes tagged with student's course
+  //  - ALWAYS include "unassigned" for BOTH Security+ and A+ students (this line enforces your request)
+  //  - never show archived
+  const studentQuizzes = useMemo(() => {
+    if (!studentCourse) return [];
+    return quizzes.filter((q) => {
+      const c: CourseTag = (q as any).course ?? "unassigned";
+      if (isArchived(q)) return false;
+      return c === "unassigned" || c === studentCourse; // ← shows unassigned for both course types
+    });
+  }, [quizzes, studentCourse]);
+
+  // ADMIN reorder
   const sortQuizzes = (arr: Quiz[]) =>
     [...arr].sort((a: any, b: any) => {
       const ao = typeof (a as any).order === "number" ? (a as any).order : 1e9;
@@ -120,81 +196,21 @@ export default function QuizzesPage() {
       return a.title.localeCompare(b.title);
     });
 
-  useEffect(() => {
-    if (!user || !roleReady) return;
-
-    const fetchQuizzes = async () => {
-      setLoading(true);
-      try {
-        const fetchedQuizzes =
-          role === "admin" ? await getQuizzes() : await getQuizzesForUser(user.uid);
-
-        // Hide archived for students
-        const visible =
-          role === "admin" ? fetchedQuizzes : fetchedQuizzes.filter((q) => !isArchived(q));
-
-        const sorted = sortQuizzes(visible);
-        setQuizzes(sorted);
-
-        if (role === "admin") {
-          const scores: Record<string, number | null> = {};
-          for (const quiz of sorted) {
-            const results = await getAllResultsForQuiz(quiz.id);
-            if (results.length > 0) {
-              const totalScore = results.reduce(
-                (acc, result) => acc + (result.score / result.total) * 100,
-                0
-              );
-              scores[quiz.id] = Math.round(totalScore / results.length);
-            } else {
-              scores[quiz.id] = null;
-            }
-          }
-          setAverageScores(scores);
-        }
-      } catch (error) {
-        console.error("Failed to fetch quizzes:", error);
-      } finally {
-        setLoading(false);
-      }
-    };
-
-    fetchQuizzes();
-  }, [user, role, roleReady]);
-
-  const getQuizStatus = (quiz: Quiz) => {
-    if ((quiz as any)?.archived === true) return "Archived";
-    if (quiz.results && quiz.results.length > 0) return "Completed";
-    if (quiz.status === "Not Started") return "Not Submitted";
-    return quiz.status;
-  };
-
-  const handleNavigate = (path: string, actionKey: string) => {
-    setLoadingAction(actionKey);
-    router.push(path);
-  };
-
-  const onDragEnd = async (result: DropResult) => {
+  async function onDragEnd(result: DropResult) {
     if (!result.destination) return;
     const { source, destination } = result;
     if (source.index === destination.index) return;
 
     setBeforeDnD(quizzes);
-
-    // Optimistic re-order
     const next = Array.from(quizzes);
     const [moved] = next.splice(source.index, 1);
     next.splice(destination.index, 0, moved);
     setQuizzes(next);
 
-    // Compute stable order values and persist
     const pairs = next.map((q, i) => ({ id: q.id, order: (i + 1) * 1000 }));
-
     try {
       setSavingOrder(true);
       await saveQuizOrder(pairs);
-
-      // Keep local state consistent with saved order
       setQuizzes((prev) =>
         prev.map((q) => {
           const p = pairs.find((x) => x.id === q.id);
@@ -203,26 +219,61 @@ export default function QuizzesPage() {
       );
     } catch (e) {
       console.error("Failed to save order:", e);
-      if (beforeDnD) setQuizzes(beforeDnD); // rollback
+      if (beforeDnD) setQuizzes(beforeDnD);
     } finally {
       setSavingOrder(false);
       setBeforeDnD(null);
     }
-  };
+  }
 
-  // Secondary safety net
-  const quizzesForRender = role === "admin" ? quizzes : quizzes.filter((q) => !isArchived(q));
+  // Password submit (first-time course selection)
+  async function submitPassword() {
+    if (!pendingCourse || !user) return;
+    setPwSubmitting(true);
+    try {
+      const expected = COURSE_PASSWORDS[pendingCourse].toLowerCase().trim();
+      const given = pwInput.toLowerCase().trim();
+      if (expected !== given) {
+        setPwSubmitting(false);
+        return alert("Incorrect code. Please try again.");
+      }
+      await updateDoc(doc(db, "users", user.uid), { courseTag: pendingCourse });
+      setStudentCourse(pendingCourse);
+      setShowChooser(false);
+      setPwDialogOpen(false);
+    } catch (e) {
+      console.error(e);
+      alert("Failed to save your course. Please try again.");
+    } finally {
+      setPwSubmitting(false);
+    }
+  }
+
+  function StatusBadge({ quiz }: { quiz: Quiz }) {
+    const status =
+      (quiz as any)?.archived === true
+        ? "Archived"
+        : quiz.results && quiz.results.length > 0
+        ? "Completed"
+        : quiz.status === "Not Started"
+        ? "Not Submitted"
+        : quiz.status;
+    return <Badge variant={getBadgeVariant(status)}>{status}</Badge>;
+  }
+
+  const roleIsAdmin = role === "admin";
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
+      {/* Header */}
+      <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
         <div>
           <h1 className="text-3xl font-bold font-headline">Quizzes</h1>
           <p className="text-muted-foreground">
-            {role === "admin" ? "Manage your quizzes here." : "View and take your quizzes here."}
+            {roleIsAdmin ? "Manage your quizzes here." : "Your course quizzes"}
           </p>
         </div>
-        {role === "admin" && (
+        {roleIsAdmin && (
           <Button asChild className="bg-accent text-accent-foreground hover:bg-accent/90">
             <Link href="/dashboard/quizzes/new">
               <PlusCircle className="mr-2 h-4 w-4" />
@@ -232,204 +283,246 @@ export default function QuizzesPage() {
         )}
       </div>
 
-      {loading || !roleReady ? (
+      {/* ADMIN filter: All / Security+ / A+ */}
+      {roleIsAdmin && (
+        <div className="flex flex-wrap items-center gap-2">
+          <Button variant={adminFilter === "all" ? "default" : "outline"} onClick={() => setAdminFilter("all")}>
+            All
+          </Button>
+          <Button variant={adminFilter === "security+" ? "default" : "outline"} onClick={() => setAdminFilter("security+")}>
+            <Shield className="mr-2 h-4 w-4" />
+            Security+
+          </Button>
+          <Button variant={adminFilter === "a+" ? "default" : "outline"} onClick={() => setAdminFilter("a+")}>
+            <Cpu className="mr-2 h-4 w-4" />
+            A+
+          </Button>
+        </div>
+      )}
+
+      {/* STUDENT first-time chooser */}
+      {!roleIsAdmin && showChooser && (
+        <Card>
+          <CardHeader>
+            <CardTitle>Choose Your Course</CardTitle>
+            <CardDescription>Select your course and enter the access code once. It will be saved to your profile.</CardDescription>
+          </CardHeader>
+          <CardContent className="flex flex-col gap-3 sm:flex-row">
+            <Button
+              className="flex-1"
+              onClick={() => {
+                setPendingCourse("security+");
+                setPwInput("");
+                setPwDialogOpen(true);
+              }}
+            >
+              <Shield className="mr-2 h-4 w-4" />
+              Security+
+            </Button>
+            <Button
+              className="flex-1"
+              onClick={() => {
+                setPendingCourse("a+");
+                setPwInput("");
+                setPwDialogOpen(true);
+              }}
+            >
+              <Cpu className="mr-2 h-4 w-4" />
+              A+
+            </Button>
+          </CardContent>
+
+          <Dialog open={pwDialogOpen} onOpenChange={setPwDialogOpen}>
+            <DialogContent>
+              <DialogHeader>
+                <DialogTitle>Enter Access Code ({pendingCourse === "a+" ? "A+" : "Security+"})</DialogTitle>
+              </DialogHeader>
+              <div className="space-y-2">
+                <Label htmlFor="course-code">Code (case-insensitive)</Label>
+                <Input
+                  id="course-code"
+                  placeholder={pendingCourse === "a+" ? "202-1201" : "sy0-701"}
+                  value={pwInput}
+                  onChange={(e) => setPwInput(e.target.value)}
+                  onKeyDown={(e) => e.key === "Enter" && submitPassword()}
+                  autoFocus
+                />
+              </div>
+              <DialogFooter>
+                <Button variant="outline" onClick={() => setPwDialogOpen(false)}>
+                  Cancel
+                </Button>
+                <Button onClick={submitPassword} disabled={pwSubmitting}>
+                  {pwSubmitting ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+                  Unlock
+                </Button>
+              </DialogFooter>
+            </DialogContent>
+          </Dialog>
+        </Card>
+      )}
+
+      {/* Content */}
+      {loading ? (
         <Grid>
           {[...Array(3)].map((_, i) => (
             <QuizCardSkeleton key={i} />
           ))}
         </Grid>
-      ) : quizzesForRender.length > 0 ? (
-        role === "admin" ? (
-          <DragDropContext onDragEnd={onDragEnd}>
-            <Droppable droppableId="quiz-grid" direction="vertical">
-              {(provided) => (
-                <div
-                  ref={provided.innerRef}
-                  {...provided.droppableProps}
-                  className="grid gap-6 md:grid-cols-2 xl:grid-cols-3"
-                >
-                  {quizzesForRender.map((quiz, index) => {
-                    const averageScore = averageScores[quiz.id];
-                    const isActionLoading = (action: string) =>
-                      loadingAction === `${action}-${quiz.id}`;
-
-                    return (
-                      <Draggable
-                        key={quiz.id}
-                        draggableId={quiz.id}
-                        index={index}
-                        isDragDisabled={savingOrder}
-                      >
-                        {(drag) => (
-                          <Card
-                            ref={drag.innerRef}
-                            {...drag.draggableProps}
-                            className="flex flex-col relative"
+      ) : roleIsAdmin ? (
+        <DragDropContext onDragEnd={onDragEnd}>
+          <Droppable droppableId="quiz-grid" direction="vertical">
+            {(provided) => (
+              <div ref={provided.innerRef} {...provided.droppableProps} className="grid gap-6 md:grid-cols-2 xl:grid-cols-3">
+                {sortQuizzes(adminQuizzes).map((quiz, index) => {
+                  const averageScore = averageScores[quiz.id];
+                  const isActionLoading = (action: string) => loadingAction === `${action}-${quiz.id}`;
+                  return (
+                    <Draggable key={quiz.id} draggableId={quiz.id} index={index} isDragDisabled={savingOrder}>
+                      {(drag) => (
+                        <Card ref={drag.innerRef} {...drag.draggableProps} className="flex flex-col relative">
+                          <button
+                            {...drag.dragHandleProps}
+                            className="absolute top-3 right-3 opacity-60 hover:opacity-100 transition"
+                            aria-label="Drag to reorder"
+                            title="Drag to reorder"
+                            disabled={savingOrder}
                           >
-                            <button
-                              {...drag.dragHandleProps}
-                              className="absolute top-3 right-3 opacity-60 hover:opacity-100 transition"
-                              aria-label="Drag to reorder"
-                              title="Drag to reorder"
-                              disabled={savingOrder}
+                            <GripVertical className="h-4 w-4" />
+                          </button>
+
+                          <CardHeader>
+                            <div className="flex items-center justify-between">
+                              <CardTitle className="flex items-center gap-2">
+                                {quiz.title}
+                                {(quiz as any).course && (quiz as any).course !== "unassigned" && (
+                                  <Badge variant="outline">{String((quiz as any).course).toUpperCase()}</Badge>
+                                )}
+                                {isArchived(quiz) && <Badge variant={getBadgeVariant("Archived")}>Archived</Badge>}
+                              </CardTitle>
+                            </div>
+                            <CardDescription>{quiz.description}</CardDescription>
+                          </CardHeader>
+
+                          <CardContent className="flex-grow">
+                            <div className="flex justify-between text-sm text-muted-foreground">
+                              <span>{quiz.questions.length} Questions</span>
+                              {averageScore !== null && averageScore !== undefined ? (
+                                <span className="flex items-center gap-1 font-semibold text-primary">
+                                  <Percent className="h-4 w-4" />
+                                  {averageScore}% Avg. Score
+                                </span>
+                              ) : (
+                                <span className="flex items-center gap-1 text-sm text-muted-foreground">
+                                  No attempts yet
+                                </span>
+                              )}
+                            </div>
+                          </CardContent>
+
+                          <CardFooter className="flex flex-col items-stretch gap-2">
+                            <Button
+                              onClick={() => {
+                                setLoadingAction(`analytics-${quiz.id}`);
+                                router.push(`/dashboard/quizzes/${quiz.id}/analytics`);
+                              }}
+                              variant="outline"
+                              disabled={isActionLoading("analytics")}
                             >
-                              <GripVertical className="h-4 w-4" />
-                            </button>
-
-                            <CardHeader>
-                              <div className="flex items-center justify-between">
-                                <CardTitle className="flex items-center gap-2">
-                                  {quiz.title}
-                                  {isArchived(quiz) && (
-                                    <Badge variant={getBadgeVariant("Archived")}>Archived</Badge>
-                                  )}
-                                </CardTitle>
-                              </div>
-                              <CardDescription>{quiz.description}</CardDescription>
-                            </CardHeader>
-
-                            <CardContent className="flex-grow">
-                              <div className="flex justify-between text-sm text-muted-foreground">
-                                <span>{quiz.questions.length} Questions</span>
-                                {averageScore !== null && averageScore !== undefined ? (
-                                  <span className="flex items-center gap-1 font-semibold text-primary">
-                                    <Percent className="h-4 w-4" />
-                                    {averageScore}% Avg. Score
-                                  </span>
-                                ) : (
-                                  <span className="flex items-center gap-1 text-sm text-muted-foreground">
-                                    No attempts yet
-                                  </span>
-                                )}
-                              </div>
-                            </CardContent>
-
-                            <CardFooter className="flex flex-col items-stretch gap-2">
-                              <Button
-                                onClick={() =>
-                                  handleNavigate(
-                                    `/dashboard/quizzes/${quiz.id}/analytics`,
-                                    `analytics-${quiz.id}`
-                                  )
-                                }
-                                variant="outline"
-                                disabled={isActionLoading("analytics")}
-                              >
-                                {isActionLoading("analytics") ? (
-                                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                                ) : (
-                                  <BarChart className="mr-2 h-4 w-4" />
-                                )}
-                                View Analytics
-                              </Button>
-                              <Button
-                                onClick={() =>
-                                  handleNavigate(
-                                    `/dashboard/quizzes/${quiz.id}/edit`,
-                                    `edit-${quiz.id}`
-                                  )
-                                }
-                                disabled={isActionLoading("edit")}
-                              >
-                                {isActionLoading("edit") ? (
-                                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                                ) : (
-                                  <Edit className="mr-2 h-4 w-4" />
-                                )}
-                                Edit Quiz
-                              </Button>
-                            </CardFooter>
-                          </Card>
-                        )}
-                      </Draggable>
-                    );
-                  })}
-                  {provided.placeholder}
-                </div>
-              )}
-            </Droppable>
-          </DragDropContext>
-        ) : (
-          <div className="grid gap-6 md:grid-cols-2 xl:grid-cols-3">
-            {quizzesForRender.map((quiz) => {
-              const status = getQuizStatus(quiz);
-              const hasAttempts = quiz.results && quiz.results.length > 0;
-
-              return (
-                <Card key={quiz.id} className="flex flex-col">
-                  <CardHeader>
-                    <div className="flex items-center justify-between">
-                      <CardTitle>{quiz.title}</CardTitle>
-                      <Badge variant={getBadgeVariant(status)}>{status}</Badge>
-                    </div>
-                    <CardDescription>{quiz.description}</CardDescription>
-                  </CardHeader>
-                  <CardContent className="flex-grow">
-                    <div className="flex justify-between text-sm text-muted-foreground">
-                      <span>{quiz.questions.length} Questions</span>
-                      {hasAttempts ? (
-                        <span className="flex items-center gap-1">
-                          <History className="h-4 w-4" />
-                          {quiz.results?.length} attempt{quiz.results?.length === 1 ? "" : "s"}
-                        </span>
-                      ) : null}
-                    </div>
-                  </CardContent>
-                  <CardFooter className="flex flex-col items-stretch gap-2">
+                              {isActionLoading("analytics") ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <BarChart className="mr-2 h-4 w-4" />}
+                              View Analytics
+                            </Button>
+                            <Button
+                              onClick={() => {
+                                setLoadingAction(`edit-${quiz.id}`);
+                                router.push(`/dashboard/quizzes/${quiz.id}/edit`);
+                              }}
+                              disabled={isActionLoading("edit")}
+                            >
+                              {isActionLoading("edit") ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Edit className="mr-2 h-4 w-4" />}
+                              Edit Quiz
+                            </Button>
+                          </CardFooter>
+                        </Card>
+                      )}
+                    </Draggable>
+                  );
+                })}
+                {provided.placeholder}
+              </div>
+            )}
+          </Droppable>
+        </DragDropContext>
+      ) : showChooser ? (
+        // chooser is shown; nothing else to list
+        null
+      ) : studentQuizzes.length > 0 ? (
+        <div className="grid gap-6 md:grid-cols-2 xl:grid-cols-3">
+          {studentQuizzes.map((quiz) => {
+            const hasAttempts = quiz.results && quiz.results.length > 0;
+            return (
+              <Card key={quiz.id} className="flex flex-col">
+                <CardHeader>
+                  <div className="flex items-center justify-between">
+                    <CardTitle className="flex items-center gap-2">
+                      {quiz.title}
+                      {/* hide the "UNASSIGNED" badge for students */}
+                      {(quiz as any).course && (quiz as any).course !== "unassigned" && (
+                        <Badge variant="outline">{String((quiz as any).course).toUpperCase()}</Badge>
+                      )}
+                    </CardTitle>
+                    <StatusBadge quiz={quiz} />
+                  </div>
+                  <CardDescription>{quiz.description}</CardDescription>
+                </CardHeader>
+                <CardContent className="flex-grow">
+                  <div className="flex justify-between text-sm text-muted-foreground">
+                    <span>{quiz.questions.length} Questions</span>
                     {hasAttempts ? (
-                      <>
-                        <Button asChild className="w-full" variant="outline">
-                          <Link href={`/quiz/${quiz.id}/results`}>
-                            <BarChart className="mr-2 h-4 w-4" />
-                            View Results
-                          </Link>
-                        </Button>
-                        <Button asChild className="w-full">
-                          <Link href={`/quiz/${quiz.id}/start`}>
-                            Retake Quiz
-                            <ArrowRight className="ml-2 h-4 w-4" />
-                          </Link>
-                        </Button>
-                      </>
-                    ) : (
+                      <span className="flex items-center gap-1">
+                        <History className="h-4 w-4" />
+                        {quiz.results?.length} attempt{quiz.results?.length === 1 ? "" : "s"}
+                      </span>
+                    ) : null}
+                  </div>
+                </CardContent>
+                <CardFooter className="flex flex-col items-stretch gap-2">
+                  {hasAttempts ? (
+                    <>
+                      <Button asChild className="w-full" variant="outline">
+                        <Link href={`/quiz/${quiz.id}/results`}>
+                          <BarChart className="mr-2 h-4 w-4" />
+                          View Results
+                        </Link>
+                      </Button>
                       <Button asChild className="w-full">
                         <Link href={`/quiz/${quiz.id}/start`}>
-                          Start Quiz
+                          Retake Quiz
                           <ArrowRight className="ml-2 h-4 w-4" />
                         </Link>
                       </Button>
-                    )}
-                  </CardFooter>
-                </Card>
-              );
-            })}
-          </div>
-        )
+                    </>
+                  ) : (
+                    <Button asChild className="w-full">
+                      <Link href={`/quiz/${quiz.id}/start`}>
+                        Start Quiz
+                        <ArrowRight className="ml-2 h-4 w-4" />
+                      </Link>
+                    </Button>
+                  )}
+                </CardFooter>
+              </Card>
+            );
+          })}
+        </div>
       ) : (
         <Card>
           <CardHeader>
             <CardTitle>No Quizzes Available</CardTitle>
             <CardDescription>
-              {role === "admin"
-                ? "You haven't created any quizzes yet. Get started by creating a new one."
-                : "There are no quizzes assigned to you at the moment. Please check back later."}
+              There are no quizzes for your course yet. Please check back later.
             </CardDescription>
           </CardHeader>
-          {role === "admin" && (
-            <CardContent>
-              <Button
-                onClick={() => handleNavigate("/dashboard/quizzes/new", "create")}
-                disabled={loadingAction === "create"}
-              >
-                {loadingAction === "create" ? (
-                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                ) : (
-                  <PlusCircle className="mr-2 h-4 w-4" />
-                )}
-                Create Your First Quiz
-              </Button>
-            </CardContent>
-          )}
         </Card>
       )}
     </div>

@@ -1,6 +1,10 @@
+// FILE: src/app/quiz/[id]/start/page.tsx
+// Purpose: Create/Reset the student's session *before* navigating to the runner.
+// This prevents the "start → bounce back" behavior on newly created/assigned quizzes.
+
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import {
@@ -25,12 +29,9 @@ import {
   Play,
 } from "lucide-react";
 import { useAuth } from "@/context/auth-context";
-
-// Firestore (used only to peek/reset the session from the start page)
 import { db } from "@/lib/firebase";
 import { doc, getDoc, setDoc, serverTimestamp } from "firebase/firestore";
 
-// small util
 const formatMMSS = (sec: number) => {
   const m = Math.floor(sec / 60);
   const s = sec % 60;
@@ -54,20 +55,22 @@ export default function StartQuizPage() {
   const [quiz, setQuiz] = useState<Quiz | null>(null);
   const [loading, setLoading] = useState(true);
 
-  // session peek (only for Normal mode decision UI)
   const [checkingSession, setCheckingSession] = useState(true);
   const [hasInProgress, setHasInProgress] = useState(false);
   const [timeLeft, setTimeLeft] = useState<number | null>(null);
   const [expired, setExpired] = useState(false);
-  const [resetting, setResetting] = useState(false);
+  const [working, setWorking] = useState<"start" | "retake" | null>(null);
 
   // Load quiz
   useEffect(() => {
     if (authLoading) return;
+
+    // Admins edit, not take
     if (role === "admin") {
       router.replace(`/dashboard/quizzes/${id}/edit`);
       return;
     }
+
     if (id) {
       getQuiz(id)
         .then(setQuiz)
@@ -75,7 +78,7 @@ export default function StartQuizPage() {
     }
   }, [id, authLoading, role, router]);
 
-  // Peek existing session (only for normal mode card logic)
+  // Peek existing session for the Normal-mode panel
   useEffect(() => {
     const run = async () => {
       if (!user || !quiz) {
@@ -93,7 +96,7 @@ export default function StartQuizPage() {
         }
         const data = snap.data() as QuizSession;
 
-        // If already submitted: treat as no in-progress
+        // If submitted already, treat like no in-progress
         if ((data as any).submittedAt) {
           setHasInProgress(false);
           setTimeLeft(null);
@@ -124,28 +127,42 @@ export default function StartQuizPage() {
     run();
   }, [user, quiz]);
 
-  // Retake: reset the session doc (clear answers, new startedAt, new order if shuffle)
-  const handleRetake = async () => {
+  // Ensure a session exists
+  const createFreshSession = async () => {
     if (!user || !quiz) return;
-    setResetting(true);
+    const order = quiz.shuffleQuestions
+      ? fyShuffle(quiz.questions.map((q) => q.id))
+      : quiz.questions.map((q) => q.id);
+
+    const fresh: QuizSession = {
+      startedAt: Date.now(),
+      order,
+      answersByQuestionId: {},
+      lastSavedAt: Date.now(),
+      currentIndex: 0,
+    };
+
+    const ref = doc(db, "quizzes", quiz.id, "sessions", user.uid);
+    await setDoc(ref, { ...fresh, _createdAt: serverTimestamp() });
+  };
+
+  const handleStartNew = async () => {
     try {
-      const order = quiz.shuffleQuestions
-        ? fyShuffle(quiz.questions.map((q) => q.id))
-        : quiz.questions.map((q) => q.id);
-
-      const fresh: QuizSession = {
-        startedAt: Date.now(),
-        order,
-        answersByQuestionId: {},
-        lastSavedAt: Date.now(),
-        currentIndex: 0,
-      };
-
-      const ref = doc(db, "quizzes", quiz.id, "sessions", user.uid);
-      await setDoc(ref, { ...fresh, _createdAt: serverTimestamp() });
-      router.push(`/quiz/${quiz.id}?mode=normal`);
+      setWorking("start");
+      await createFreshSession();
+      router.push(`/quiz/${quiz!.id}?mode=normal`);
     } finally {
-      setResetting(false);
+      setWorking(null);
+    }
+  };
+
+  const handleRetake = async () => {
+    try {
+      setWorking("retake");
+      await createFreshSession();
+      router.push(`/quiz/${quiz!.id}?mode=normal`);
+    } finally {
+      setWorking(null);
     }
   };
 
@@ -175,7 +192,6 @@ export default function StartQuizPage() {
     );
   }
 
-  // Normal mode card actions based on session peek
   const normalModeButtons = () => {
     if (checkingSession) {
       return (
@@ -194,7 +210,6 @@ export default function StartQuizPage() {
               Time remaining: <span className="font-medium">{formatMMSS(timeLeft)}</span>
             </div>
           )}
-          {/* CONTINUE: hover → white bg + blue text */}
           <Button
             className="w-full hover:bg-white hover:text-primary"
             variant="default"
@@ -204,15 +219,18 @@ export default function StartQuizPage() {
             Continue last attempt
           </Button>
 
-          {/* RETAKE: default white/bg with blue text; hover blue/bg with white text */}
           <Button
             className="w-full bg-white text-primary border border-primary/20 hover:bg-primary hover:text-primary-foreground"
             variant="outline"
             onClick={handleRetake}
-            disabled={resetting}
+            disabled={working === "retake"}
           >
-            <RotateCcw className="mr-2 h-4 w-4" />
-            {resetting ? "Resetting…" : "Retake exam"}
+            {working === "retake" ? (
+              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+            ) : (
+              <RotateCcw className="mr-2 h-4 w-4" />
+            )}
+            {working === "retake" ? "Resetting…" : "Retake exam"}
           </Button>
         </div>
       );
@@ -225,25 +243,36 @@ export default function StartQuizPage() {
             Your previous attempt expired. You can start a new attempt.
           </div>
         )}
-        {/* START: hover → blue bg + white text */}
         <Button
           className="w-full hover:bg-primary hover:text-primary-foreground"
           variant="outline"
-          onClick={() => router.push(`/quiz/${quiz.id}?mode=normal`)}
+          onClick={handleStartNew}
+          disabled={working === "start"}
         >
-          Start Official Attempt <ArrowRight className="ml-2 h-4 w-4" />
+          {working === "start" ? (
+            <>
+              <Loader2 className="mr-2 h-4 w-4 animate-spin" /> Preparing…
+            </>
+          ) : (
+            <>
+              Start Official Attempt <ArrowRight className="ml-2 h-4 w-4" />
+            </>
+          )}
         </Button>
 
         {expired && (
-          // RETAKE here gets the same styling rule you asked for
           <Button
             className="w-full bg-white text-primary border border-primary/20 hover:bg-primary hover:text-primary-foreground"
             variant="outline"
             onClick={handleRetake}
-            disabled={resetting}
+            disabled={working === "retake"}
           >
-            <RotateCcw className="mr-2 h-4 w-4" />
-            {resetting ? "Resetting…" : "Retake exam"}
+            {working === "retake" ? (
+              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+            ) : (
+              <RotateCcw className="mr-2 h-4 w-4" />
+            )}
+            {working === "retake" ? "Resetting…" : "Retake exam"}
           </Button>
         )}
       </div>
@@ -269,7 +298,6 @@ export default function StartQuizPage() {
           <CardContent className="pt-6">
             <h2 className="text-xl font-bold text-center mb-6 font-headline">Choose Your Mode</h2>
             <div className="grid md:grid-cols-2 gap-6">
-              {/* Normal Mode Card */}
               <div className="group">
                 <div className="p-6 border rounded-lg h-full flex flex-col items-center text-center hover:border-primary hover:bg-primary/5 transition-all">
                   <ShieldCheck className="h-12 w-12 text-primary mb-4" />
@@ -281,7 +309,6 @@ export default function StartQuizPage() {
                 </div>
               </div>
 
-              {/* Practice Mode Card */}
               <Link href={`/quiz/${id}?mode=practice`} className="group">
                 <div className="p-6 border rounded-lg h-full flex flex-col items-center text-center hover:border-accent hover:bg-accent/5 transition-all">
                   <Beaker className="h-12 w-12 text-accent mb-4" />
@@ -289,7 +316,10 @@ export default function StartQuizPage() {
                   <p className="text-muted-foreground text-sm mt-1 mb-4">
                     Take the quiz for practice. Your results will not affect your grade.
                   </p>
-                  <Button className="mt-auto w-full bg-accent/10 text-accent border-accent/20 group-hover:bg-accent group-hover:text-accent-foreground" variant="outline">
+                  <Button
+                    className="mt-auto w-full bg-accent/10 text-accent border-accent/20 group-hover:bg-accent group-hover:text-accent-foreground"
+                    variant="outline"
+                  >
                     Start Practice <ArrowRight className="ml-2 h-4 w-4" />
                   </Button>
                 </div>
