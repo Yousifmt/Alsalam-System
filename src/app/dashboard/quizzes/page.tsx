@@ -1,6 +1,10 @@
 // FILE: src/app/dashboard/quizzes/page.tsx
 "use client";
 
+export const dynamic = "force-dynamic";          // ⬅ prevent prerender so CSR bailout is fine
+export const revalidate = 0;                     // ⬅ no static caching
+export const fetchCache = "force-no-store";      // ⬅ always render on request
+
 import React, { Suspense, useEffect, useMemo, useState, type ReactNode } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
@@ -29,15 +33,15 @@ import {
   Cpu,
 } from "lucide-react";
 
-import dynamic from "next/dynamic";
+import dynamicImport from "next/dynamic";
 import type { DropResult } from "@hello-pangea/dnd";
 
 import type { Quiz } from "@/lib/types";
 import { getQuizzesForUser, getQuizzes, getAllResultsForQuiz, saveQuizOrder } from "@/services/quiz-service";
 
-const DragDropContext = dynamic(() => import("@hello-pangea/dnd").then((m) => m.DragDropContext), { ssr: false });
-const Droppable = dynamic(() => import("@hello-pangea/dnd").then((m) => m.Droppable), { ssr: false });
-const Draggable = dynamic(() => import("@hello-pangea/dnd").then((m) => m.Draggable), { ssr: false });
+const DragDropContext = dynamicImport(() => import("@hello-pangea/dnd").then((m) => m.DragDropContext), { ssr: false });
+const Droppable = dynamicImport(() => import("@hello-pangea/dnd").then((m) => m.Droppable), { ssr: false });
+const Draggable = dynamicImport(() => import("@hello-pangea/dnd").then((m) => m.Draggable), { ssr: false });
 
 /* ────────────────────────────────────────────────────────────────────────────
    Course types & password map
@@ -95,7 +99,7 @@ function Grid({ children }: { children: ReactNode }) {
 }
 
 /* ────────────────────────────────────────────────────────────────────────────
-   Wrapper fixes Next.js warning:
+   Wrapper fixes the Next.js warning:
    useSearchParams() must be inside a <Suspense /> boundary.
 ──────────────────────────────────────────────────────────────────────────── */
 export default function QuizzesPage() {
@@ -196,17 +200,17 @@ function QuizzesPageInner() {
     run();
   }, [roleReady, role, user]);
 
-  // ADMIN filtered list
+  // ADMIN filtered list  (⚠️ fixed operator precedence)
   const adminQuizzes = useMemo(() => {
     if (adminFilter === "all") return quizzes;
-    return quizzes.filter((q) => (q.course ?? "unassigned") === adminFilter);
+    return quizzes.filter((q) => (((q as any).course ?? "unassigned") as CourseTag) === adminFilter);
   }, [quizzes, adminFilter]);
 
   // STUDENT visible list: include student's course + unassigned; hide archived
   const studentQuizzes = useMemo(() => {
     if (!studentCourse) return [];
     return quizzes.filter((q) => {
-      const c: CourseTag = (q as any).course ?? "unassigned";
+      const c: CourseTag = ((q as any).course ?? "unassigned") as CourseTag;
       if (isArchived(q)) return false;
       return c === "unassigned" || c === studentCourse;
     });
