@@ -22,6 +22,11 @@ function DashboardMainContent({ children }: PropsWithChildren) {
         </main>
     )
 }
+// app/dashboard/layout.tsx (أو app/layout.tsx)
+export const dynamic = 'force-dynamic';
+export const revalidate = 0;
+export const fetchCache = 'force-no-store';
+export const runtime = 'nodejs'; // يضمن تشغيل Node بدل Edge عند الحاجة
 
 
 export default function DashboardLayout({ children }: PropsWithChildren) {

@@ -1,4 +1,4 @@
-'use server';
+import 'server-only';
 /**
  * @fileOverview An AI agent that generates feedback notes for student evaluations.
  *
