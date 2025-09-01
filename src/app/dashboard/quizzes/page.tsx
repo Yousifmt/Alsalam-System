@@ -1,11 +1,11 @@
 // FILE: src/app/dashboard/quizzes/page.tsx
 "use client";
 
+import React, { Suspense, useEffect, useMemo, useState, type ReactNode } from "react";
 import Link from "next/link";
-import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { doc, getDoc, updateDoc } from "firebase/firestore";
-import { db } from "@/lib/firebase"; // client Firestore instance
+import { db } from "@/lib/firebase";
 import { useAuth } from "@/context/auth-context";
 
 import { Button } from "@/components/ui/button";
@@ -41,7 +41,6 @@ const Draggable = dynamic(() => import("@hello-pangea/dnd").then((m) => m.Dragga
 
 /* ────────────────────────────────────────────────────────────────────────────
    Course types & password map
-   (local aliases so we don't depend on lib/types changes)
 ──────────────────────────────────────────────────────────────────────────── */
 type CourseTag = "security+" | "a+" | "unassigned";
 type StudentCourseTag = "security+" | "a+";
@@ -96,11 +95,40 @@ function Grid({ children }: { children: ReactNode }) {
 }
 
 /* ────────────────────────────────────────────────────────────────────────────
-   Page
+   Wrapper fixes Next.js warning:
+   useSearchParams() must be inside a <Suspense /> boundary.
 ──────────────────────────────────────────────────────────────────────────── */
 export default function QuizzesPage() {
+  return (
+    <Suspense
+      fallback={
+        <div className="space-y-6">
+          <div className="flex items-center justify-between">
+            <div>
+              <div className="h-8 w-40 bg-muted rounded" />
+              <div className="mt-2 h-4 w-64 bg-muted rounded" />
+            </div>
+            <div className="h-10 w-40 bg-muted rounded" />
+          </div>
+          <Grid>
+            {[...Array(3)].map((_, i) => (
+              <QuizCardSkeleton key={i} />
+            ))}
+          </Grid>
+        </div>
+      }
+    >
+      <QuizzesPageInner />
+    </Suspense>
+  );
+}
+
+/* ────────────────────────────────────────────────────────────────────────────
+   Real page (uses useSearchParams safely inside Suspense)
+──────────────────────────────────────────────────────────────────────────── */
+function QuizzesPageInner() {
   const router = useRouter();
-  const params = useSearchParams();
+  const params = useSearchParams(); // ← now safely inside Suspense
   const { role, user } = useAuth();
 
   const [quizzes, setQuizzes] = useState<Quiz[]>([]);
@@ -174,16 +202,13 @@ export default function QuizzesPage() {
     return quizzes.filter((q) => (q.course ?? "unassigned") === adminFilter);
   }, [quizzes, adminFilter]);
 
-  // STUDENT visible list:
-  //  - always include quizzes tagged with student's course
-  //  - ALWAYS include "unassigned" for BOTH Security+ and A+ students (this line enforces your request)
-  //  - never show archived
+  // STUDENT visible list: include student's course + unassigned; hide archived
   const studentQuizzes = useMemo(() => {
     if (!studentCourse) return [];
     return quizzes.filter((q) => {
       const c: CourseTag = (q as any).course ?? "unassigned";
       if (isArchived(q)) return false;
-      return c === "unassigned" || c === studentCourse; // ← shows unassigned for both course types
+      return c === "unassigned" || c === studentCourse;
     });
   }, [quizzes, studentCourse]);
 
