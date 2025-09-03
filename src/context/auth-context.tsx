@@ -1,4 +1,3 @@
-
 "use client";
 
 import { useRouter } from "next/navigation";
@@ -9,11 +8,20 @@ import { app, db } from "@/lib/firebase";
 
 type Role = "admin" | "student" | null;
 
+// ---- NEW: shape for user profile pulled from Firestore
+type UserProfile = {
+  name?: string;
+  email?: string;
+  courseTag?: string;
+} | null;
+
 interface AuthContextType {
   user: User | null;
   role: Role;
   loading: boolean;
   logout: () => void;
+  // ---- NEW: expose profile so pages can read DB fields (like `name`)
+  profile: UserProfile;
 }
 
 const auth = getAuth(app);
@@ -24,32 +32,41 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const router = useRouter();
   const [user, setUser] = useState<User | null>(null);
   const [role, setRole] = useState<Role>(null);
+  const [profile, setProfile] = useState<UserProfile>(null); // NEW
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, async (user) => {
-      setLoading(true); // Start loading whenever auth state changes
+      setLoading(true);
       if (user) {
         setUser(user);
         try {
-            // Get user role from Firestore
-            const userDoc = await getDoc(doc(db, "users", user.uid));
-            if (userDoc.exists()) {
-                setRole(userDoc.data().role);
-            } else {
-                // Default role if not found, or handle as an error
-                setRole('student'); 
-            }
-        } catch(error) {
-            console.error("Error fetching user role:", error);
-            setRole('student'); // Default to student on error
+          const snap = await getDoc(doc(db, "users", user.uid));
+          if (snap.exists()) {
+            const data = snap.data() as any;
+            setRole((data?.role as Role) ?? "student");
+            // ---- NEW: save DB profile fields
+            setProfile({
+              name: data?.name ?? undefined,
+              email: data?.email ?? undefined,
+              courseTag: data?.courseTag ?? undefined,
+            });
+          } else {
+            setRole("student");
+            setProfile(null);
+          }
+        } catch (error) {
+          console.error("Error fetching user role/profile:", error);
+          setRole("student");
+          setProfile(null);
         } finally {
-            setLoading(false); // Stop loading after role is fetched
+          setLoading(false);
         }
       } else {
         setUser(null);
         setRole(null);
-        setLoading(false); // Stop loading if no user
+        setProfile(null); // NEW
+        setLoading(false);
       }
     });
 
@@ -63,7 +80,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   };
 
   return (
-    <AuthContext.Provider value={{ user, role, loading, logout }}>
+    <AuthContext.Provider value={{ user, role, loading, logout, profile }}>
       {children}
     </AuthContext.Provider>
   );

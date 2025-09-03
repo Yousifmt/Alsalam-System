@@ -351,7 +351,8 @@ export function QuizInterface({
                     <div className="h-5 w-5" />
                   )
                 )}
-                <span>{option}</span>
+                <span className="whitespace-pre-wrap break-words">{option}</span>
+
               </Label>
             ))}
           </RadioGroup>
@@ -386,7 +387,8 @@ export function QuizInterface({
                       <div className="h-5 w-5" />
                     )
                   )}
-                  <span>{option}</span>
+                  <span className="whitespace-pre-wrap break-words">{option}</span>
+
                 </Label>
               );
             })}
@@ -441,7 +443,9 @@ export function QuizInterface({
           </CardDescription>
         </div>
 
-        <CardTitle className="pt-4 text-2xl font-headline">{currentQuestion.question}</CardTitle>
+<CardTitle className="pt-4 text-2xl font-headline whitespace-pre-wrap break-words">
+  {currentQuestion.question}
+</CardTitle>
 
         {currentQuestion.imageUrl && (
           <div className="relative mt-4 h-64 w-full">
