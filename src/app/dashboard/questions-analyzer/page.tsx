@@ -208,7 +208,7 @@ export default function QuestionsAnalyzerPage() {
                          hover:bg-blue-800 hover:shadow-lg transition-all duration-200"
               // onClick={() => { /* LATER: navigate to A+ analyzer link here */ }}
             >
-              Go to Questions Analyser{/* (A+ link will be added here later) */}
+              Go to Questions Analyser{"https://al-salam-questions-analyzer-a.vercel.app/"}
             </Button>
           )}
         </motion.div>
