@@ -203,12 +203,18 @@ export default function QuestionsAnalyzerPage() {
               </Link> or convert to <Button asChild> like above.
               ------------------------------------------------------------ */}
           {isAPlusStudent && (
-            <Button
+             <Button
+              asChild
               className="bg-blue-900 text-white px-6 py-4 text-base rounded-md shadow-md 
                          hover:bg-blue-800 hover:shadow-lg transition-all duration-200"
-              // onClick={() => { /* LATER: navigate to A+ analyzer link here */ }}
             >
-              Go to Questions Analyser{"https://al-salam-questions-analyzer-a.vercel.app/"}
+              <Link
+                href="https://al-salam-questions-analyzer-a.vercel.app/"
+                target="_blank"
+                rel="noopener noreferrer"
+              >
+                Go to Questions Analyser
+              </Link>
             </Button>
           )}
         </motion.div>
