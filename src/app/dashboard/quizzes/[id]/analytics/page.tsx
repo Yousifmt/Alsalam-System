@@ -7,170 +7,240 @@ import { getQuiz, getAllResultsForQuiz } from "@/services/quiz-service";
 import type { Quiz, QuizResult } from "@/lib/types";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { ArrowLeft, Loader2, BarChart2, Users, Target, CheckCircle, Percent } from "lucide-react";
+import { ArrowLeft, Loader2, BarChart2, Users, Target, CheckCircle } from "lucide-react";
 import Link from "next/link";
 import { Progress } from "@/components/ui/progress";
 
 interface QuestionStat {
-    question: string;
-    correctAttempts: number;
-    totalAttempts: number;
-    correctPercentage: number;
+  question: string;
+  correctAttempts: number;
+  totalAttempts: number;
+  correctPercentage: number;
 }
+
+/* ---------- helpers just for rendering answers ---------- */
+const asArray = <T,>(v: T | T[] | undefined | null): T[] =>
+  Array.isArray(v) ? v : v == null ? [] : [v];
+
+const norm = (s: unknown) => String(s ?? "").trim().toLowerCase();
 
 export default function QuizAnalyticsPage() {
-    const params = useParams();
-    const id = params.id as string;
-    const router = useRouter();
+  const params = useParams();
+  const id = params.id as string;
+  const router = useRouter();
 
-    const [quiz, setQuiz] = useState<Quiz | null>(null);
-    const [results, setResults] = useState<QuizResult[]>([]);
-    const [questionStats, setQuestionStats] = useState<QuestionStat[]>([]);
-    const [averageScore, setAverageScore] = useState<number>(0);
-    const [loading, setLoading] = useState(true);
+  const [quiz, setQuiz] = useState<Quiz | null>(null);
+  const [results, setResults] = useState<QuizResult[]>([]);
+  const [questionStats, setQuestionStats] = useState<QuestionStat[]>([]);
+  const [averageScore, setAverageScore] = useState<number>(0);
+  const [loading, setLoading] = useState(true);
 
-    useEffect(() => {
-        if (!id) return;
+  useEffect(() => {
+    if (!id) return;
 
-        const fetchData = async () => {
-            setLoading(true);
-            try {
-                const [quizData, resultsData] = await Promise.all([
-                    getQuiz(id),
-                    getAllResultsForQuiz(id),
-                ]);
+    const fetchData = async () => {
+      setLoading(true);
+      try {
+        const [quizData, resultsData] = await Promise.all([getQuiz(id), getAllResultsForQuiz(id)]);
 
-                if (!quizData) {
-                    throw new Error("Quiz not found");
-                }
+        if (!quizData) throw new Error("Quiz not found");
 
-                setQuiz(quizData);
-                setResults(resultsData);
+        setQuiz(quizData);
+        setResults(resultsData);
 
-                if (resultsData.length > 0) {
-                    // Calculate average score
-                    const totalScore = resultsData.reduce((acc, result) => acc + (result.score / result.total) * 100, 0);
-                    setAverageScore(Math.round(totalScore / resultsData.length));
-                    
-                    // Calculate question stats
-                    const stats: Record<string, { correct: number, total: number }> = {};
+        if (resultsData.length > 0) {
+          // Average score
+          const totalScore = resultsData.reduce(
+            (acc, result) => acc + (result.score / result.total) * 100,
+            0
+          );
+          setAverageScore(Math.round(totalScore / resultsData.length));
 
-                    quizData.questions.forEach(q => {
-                        stats[q.question] = { correct: 0, total: 0 };
-                    });
+          // Per-question stats (unchanged)
+          const stats: Record<string, { correct: number; total: number }> = {};
+          quizData.questions.forEach((q) => {
+            stats[q.question] = { correct: 0, total: 0 };
+          });
 
-                    resultsData.forEach(result => {
-                        result.answeredQuestions.forEach(aq => {
-                            if (stats[aq.question]) {
-                                stats[aq.question].total++;
-                                if (aq.isCorrect) {
-                                    stats[aq.question].correct++;
-                                }
-                            }
-                        });
-                    });
+          resultsData.forEach((result) => {
+            result.answeredQuestions.forEach((aq) => {
+              if (stats[aq.question]) {
+                stats[aq.question].total++;
+                if (aq.isCorrect) stats[aq.question].correct++;
+              }
+            });
+          });
 
-                    const formattedStats = Object.entries(stats).map(([question, data]) => ({
-                        question,
-                        correctAttempts: data.correct,
-                        totalAttempts: data.total,
-                        correctPercentage: data.total > 0 ? Math.round((data.correct / data.total) * 100) : 0,
-                    }));
-                    setQuestionStats(formattedStats);
-                }
+          const formattedStats = Object.entries(stats).map(([question, data]) => ({
+            question,
+            correctAttempts: data.correct,
+            totalAttempts: data.total,
+            correctPercentage:
+              data.total > 0 ? Math.round((data.correct / data.total) * 100) : 0,
+          }));
+          setQuestionStats(formattedStats);
+        }
+      } catch (error) {
+        console.error("Failed to fetch quiz analytics:", error);
+      } finally {
+        setLoading(false);
+      }
+    };
 
-            } catch (error) {
-                console.error("Failed to fetch quiz analytics:", error);
-            } finally {
-                setLoading(false);
-            }
-        };
+    fetchData();
+  }, [id]);
 
-        fetchData();
-    }, [id]);
-
-    if (loading) {
-        return <div className="flex justify-center items-center h-64"><Loader2 className="h-8 w-8 animate-spin"/></div>;
-    }
-
-    if (!quiz) {
-        return (
-            <div className="text-center">
-                <h1 className="text-2xl font-bold">Quiz Not Found</h1>
-                <p>The requested quiz could not be found.</p>
-                 <Button asChild variant="link" className="mt-4">
-                    <Link href="/dashboard/quizzes">
-                        <ArrowLeft className="mr-2 h-4 w-4" />
-                        Back to Quizzes
-                    </Link>
-                </Button>
-            </div>
-        );
-    }
-    
+  if (loading) {
     return (
-        <div className="space-y-8">
-            <div>
-                 <Button asChild variant="outline" size="sm" className="mb-4">
-                     <Link href="/dashboard/quizzes">
-                        <ArrowLeft className="mr-2 h-4 w-4" />
-                        Back to All Quizzes
-                    </Link>
-                </Button>
-                <h1 className="text-3xl font-bold font-headline">{quiz.title} - Analytics</h1>
-                <p className="text-muted-foreground">{quiz.description}</p>
-            </div>
-            
-             <Card>
-                <CardHeader>
-                    <CardTitle className="flex items-center gap-2"><BarChart2 className="text-accent" /> Overall Performance</CardTitle>
-                </CardHeader>
-                <CardContent>
-                    {results.length > 0 ? (
-                        <div className="grid gap-6 md:grid-cols-3">
-                            <div className="flex flex-col items-center justify-center p-4 bg-secondary rounded-lg">
-                                <Users className="h-8 w-8 text-muted-foreground mb-2" />
-                                <p className="text-3xl font-bold">{results.length}</p>
-                                <p className="text-sm text-muted-foreground">Total Attempts</p>
-                            </div>
-                            <div className="flex flex-col items-center justify-center p-4 bg-secondary rounded-lg">
-                                <Target className="h-8 w-8 text-muted-foreground mb-2" />
-                                <p className="text-3xl font-bold">{averageScore}%</p>
-                                <p className="text-sm text-muted-foreground">Average Score</p>
-                            </div>
-                        </div>
-                    ) : (
-                         <div className="text-center text-muted-foreground p-8">
-                            <p>No one has attempted this quiz yet. Check back once there are results.</p>
-                        </div>
-                    )}
-                </CardContent>
-            </Card>
+      <div className="flex justify-center items-center h-64">
+        <Loader2 className="h-8 w-8 animate-spin" />
+      </div>
+    );
+  }
 
-            {results.length > 0 && (
-                <Card>
-                    <CardHeader>
-                        <CardTitle>Question Breakdown</CardTitle>
-                        <CardDescription>Performance statistics for each question in the quiz.</CardDescription>
-                    </CardHeader>
-                    <CardContent className="space-y-6">
-                        {questionStats.map((stat, index) => (
-                            <div key={index} className="space-y-2">
-                                <p className="font-semibold">{index + 1}. {stat.question}</p>
-                                <div className="flex items-center gap-4">
-                                    <Progress value={stat.correctPercentage} className="h-3 flex-1" />
-                                    <div className="flex items-center font-mono text-sm font-semibold w-28">
-                                         <CheckCircle className="h-4 w-4 mr-2 text-green-500"/>
-                                         <span className="w-12">{stat.correctPercentage}%</span>
-                                         <span className="text-xs text-muted-foreground ml-1">({stat.correctAttempts}/{stat.totalAttempts})</span>
-                                    </div>
-                                </div>
+  if (!quiz) {
+    return (
+      <div className="text-center">
+        <h1 className="text-2xl font-bold">Quiz Not Found</h1>
+        <p>The requested quiz could not be found.</p>
+        <Button asChild variant="link" className="mt-4">
+          <Link href="/dashboard/quizzes">
+            <ArrowLeft className="mr-2 h-4 w-4" />
+            Back to Quizzes
+          </Link>
+        </Button>
+      </div>
+    );
+  }
+
+  // quick lookup for % bar
+  const statMap = new Map(questionStats.map((s) => [s.question, s]));
+
+  return (
+    <div className="space-y-10 md:space-y-14">
+      <div>
+        <Button asChild variant="outline" size="sm" className="mb-4">
+          <Link href="/dashboard/quizzes">
+            <ArrowLeft className="mr-2 h-4 w-4" />
+            Back to All Quizzes
+          </Link>
+        </Button>
+        <h1 className="text-3xl font-bold font-headline">{quiz.title} - Analytics</h1>
+        <p className="text-muted-foreground">{quiz.description}</p>
+      </div>
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <BarChart2 className="text-accent" /> Overall Performance
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
+          {results.length > 0 ? (
+            <div className="grid gap-6 md:grid-cols-3">
+              <div className="flex flex-col items-center justify-center p-4 bg-secondary rounded-lg">
+                <Users className="h-8 w-8 text-muted-foreground mb-2" />
+                <p className="text-3xl font-bold">{results.length}</p>
+                <p className="text-sm text-muted-foreground">Total Attempts</p>
+              </div>
+              <div className="flex flex-col items-center justify-center p-4 bg-secondary rounded-lg">
+                <Target className="h-8 w-8 text-muted-foreground mb-2" />
+                <p className="text-3xl font-bold">{averageScore}%</p>
+                <p className="text-sm text-muted-foreground">Average Score</p>
+              </div>
+            </div>
+          ) : (
+            <div className="text-center text-muted-foreground p-8">
+              <p>No one has attempted this quiz yet. Check back once there are results.</p>
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      {results.length > 0 && (
+        <Card>
+          <CardHeader>
+            <CardTitle>Question Breakdown</CardTitle>
+            <CardDescription>
+              Correct rate and the answer choices for each question (✓ shows the correct answer).
+            </CardDescription>
+          </CardHeader>
+
+          {/* ↑ Increase overall spacing between question blocks */}
+          <CardContent className="space-y-12 md:space-y-16">
+            {quiz.questions.map((q, index) => {
+              const stat = statMap.get(q.question);
+              const options = q.options ?? [];
+              const correctSet = new Set(asArray(q.answer).map(norm));
+
+              return (
+                // ↑ Add generous top padding + divider between items (except the first)
+                <div
+                  key={index}
+                  className={`space-y-4 md:space-y-5 ${index > 0 ? "pt-8 md:pt-10 border-t" : ""}`}
+                >
+                  <p className="font-semibold">
+                    {index + 1}. {q.question}
+                  </p>
+
+                  {/* keep the same progress bar */}
+                  <div className="flex items-center gap-4">
+                    <Progress value={stat?.correctPercentage ?? 0} className="h-3 flex-1" />
+                    {stat ? (
+                      <div className="flex items-center font-mono text-sm font-semibold w-28">
+                        <CheckCircle className="h-4 w-4 mr-2 text-green-500" />
+                        <span className="w-12">{stat.correctPercentage}%</span>
+                        <span className="text-xs text-muted-foreground ml-1">
+                          ({stat.correctAttempts}/{stat.totalAttempts})
+                        </span>
+                      </div>
+                    ) : (
+                      <span className="text-xs text-muted-foreground">No attempts</span>
+                    )}
+                  </div>
+
+                  {/* answers */}
+                  <ul className="mt-2 grid gap-3 md:gap-4">
+                    {options.length ? (
+                      options.map((opt, oi) => {
+                        const isCorrect = correctSet.has(norm(opt));
+                        return (
+                          <li
+                            key={oi}
+                            className={[
+                              "flex items-center justify-between rounded-lg border px-3 py-2 md:px-4 md:py-3",
+                              isCorrect
+                                ? "bg-emerald-50 dark:bg-emerald-950/20 border-emerald-300/60 dark:border-emerald-900"
+                                : "bg-muted/30 border-border/60",
+                            ].join(" ")}
+                          >
+                            <div className="flex items-center gap-3">
+                              <span className="inline-flex h-6 w-6 items-center justify-center rounded-md border text-xs font-medium bg-background">
+                                {String.fromCharCode(65 + oi)}
+                              </span>
+                              <span className={isCorrect ? "font-medium" : ""}>{opt}</span>
                             </div>
-                        ))}
-                    </CardContent>
-                </Card>
-            )}
-        </div>
-    )
+                            {isCorrect && (
+                              <span className="inline-flex items-center gap-1.5 text-emerald-700 dark:text-emerald-300 text-sm font-medium">
+                                <CheckCircle className="h-4 w-4" />
+                                Correct
+                              </span>
+                            )}
+                          </li>
+                        );
+                      })
+                    ) : (
+                      <li className="text-sm text-muted-foreground">
+                        (No options for this question)
+                      </li>
+                    )}
+                  </ul>
+                </div>
+              );
+            })}
+          </CardContent>
+        </Card>
+      )}
+    </div>
+  );
 }
-// viewing answer functionality
