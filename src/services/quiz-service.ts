@@ -16,7 +16,7 @@ import {
   orderBy,
   writeBatch,
 } from "firebase/firestore";
-import type { Quiz, QuizResult, QuizSession, ScoringConfig } from "@/lib/types";
+import type { Quiz, QuizResult, QuizSession, ScoringConfig, CourseTag } from "@/lib/types";
 
 const quizzesCollection = collection(db, "quizzes");
 
@@ -29,32 +29,36 @@ function withDocId<T extends object>(docId: string, data: T): T & { id: string }
   return { ...(rest as T), id: docId };
 }
 
-/** Normalize quiz when reading */
+
+
 function toQuiz(docId: string, data: any): Quiz {
   const base = withDocId<Quiz>(docId, data as Quiz);
   return {
     ...base,
-    results: Array.isArray((data as any)?.results) ? (data as any).results : [],
-    shuffleQuestions: !!(data as any)?.shuffleQuestions,
-    shuffleAnswers: !!(data as any)?.shuffleAnswers,
-    archived: typeof (data as any)?.archived === "boolean" ? (data as any).archived : false,
-    scoring: (data as any)?.scoring ?? DEFAULT_SCORING,
+    results: Array.isArray(data?.results) ? data.results : [],
+    shuffleQuestions: !!data?.shuffleQuestions,
+    shuffleAnswers: !!data?.shuffleAnswers,
+    archived: typeof data?.archived === "boolean" ? data.archived : false,
+    scoring: data?.scoring ?? DEFAULT_SCORING,
+    // ✅ ensure we always have a value on reads
+    course: (data?.course ?? "unassigned") as CourseTag,
   };
 }
-
-// ====================== Admin ======================
 
 export async function createQuiz(quizData: Omit<Quiz, "id">): Promise<string> {
   const payload = {
     ...quizData,
     scoring: quizData.scoring ?? DEFAULT_SCORING,
     archived: (quizData as any)?.archived ?? false,
-    // ⬇️ default order so new quizzes fall to the end
+    course: ((quizData as any)?.course ?? "unassigned") as CourseTag, // ✅
     order: typeof (quizData as any)?.order === "number" ? (quizData as any).order : Date.now(),
   };
   const ref = await addDoc(quizzesCollection, payload);
   return ref.id;
 }
+
+// updateQuiz already merges – no change needed, course is included in quizData
+
 
 
 export async function updateQuiz(id: string, quizData: Omit<Quiz, "id">): Promise<void> {

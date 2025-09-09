@@ -231,11 +231,14 @@ export function QuizBuilderForm({ quiz }: { quiz?: Quiz }) {
   const [isDeleting, setIsDeleting] = useState(false);
   const [isImporting, setIsImporting] = useState(false);
 
-  // Only two choices: "percent" or "points900"
-  const [scoring, setScoring] = useState<ScoringConfig>(DEFAULT_SCORING);
+  // Only two choices: "percent" or "points900" (lazy init from quiz to preserve saved state)
+  const [scoring, setScoring] = useState<ScoringConfig>(() => quiz?.scoring ?? DEFAULT_SCORING);
 
-  // NEW: course assignment
-  const [course, setCourse] = useState<CourseTag>(DEFAULT_COURSE);
+  // NEW: course assignment (lazy init from quiz to preserve saved state)
+  const [course, setCourse] = useState<CourseTag>(() => (quiz?.course ?? DEFAULT_COURSE));
+
+  // Bulk-paste feedback
+  const [lastImportCount, setLastImportCount] = useState<number | null>(null);
 
   // autosave-to-draft state
   const [draftId, setDraftId] = useState<string | null>(
@@ -260,10 +263,41 @@ export function QuizBuilderForm({ quiz }: { quiz?: Quiz }) {
     setTimeLimit(quiz.timeLimit || 0);
     setShuffleQuestions(quiz.shuffleQuestions);
     setShuffleAnswers(quiz.shuffleAnswers);
-    // hydrate
-    setScoring(quiz.scoring ?? DEFAULT_SCORING);
-    setCourse(quiz.course ?? DEFAULT_COURSE);
+    // (Do not touch scoring/course here; they are initialized lazily above)
   }, [quiz, isEditMode]);
+
+  // Paste a single full question block into a specific question textarea
+  const applyParsedToSingleQuestion = (qId: number | string, raw: string): boolean => {
+    const parsed = parsePastedBlock(raw);
+    if (!parsed) return false;
+
+    const optionTexts = parsed.options.map((o) => o.text);
+    const correctIdxs = parsed.options.map((o, i) => (o.correct ? i : -1)).filter((i) => i >= 0);
+    const forceCheckbox = /\(choose\s*\d+\)/i.test(parsed.question);
+    const type: LocalQuestionType =
+      forceCheckbox || correctIdxs.length > 1 ? "checkbox" : "multiple-choice";
+
+    const answer: Question["answer"] =
+      type === "multiple-choice"
+        ? (correctIdxs.length === 1 ? optionTexts[correctIdxs[0]] : "")
+        : correctIdxs.map((ci) => optionTexts[ci]);
+
+    setQuestions((prev) =>
+      prev.map((x) =>
+        x.id === qId
+          ? {
+              ...x,
+              question: parsed.question,
+              type,
+              options: optionTexts.length ? optionTexts : x.options,
+              answer,
+            }
+          : x
+      )
+    );
+
+    return true;
+  };
 
   /* ------------------------------ Question CRUD ----------------------------- */
 
@@ -691,33 +725,46 @@ export function QuizBuilderForm({ quiz }: { quiz?: Quiz }) {
             const raw = e.clipboardData.getData("text/plain");
             if (!raw?.trim()) return;
             e.preventDefault();
-            const blocks = splitIntoBlocks(raw);
-            const created: FormQuestion[] = [];
-            blocks.forEach((block, idx) => {
-              const parsed = parsePastedBlock(block);
-              if (!parsed) return;
-              const optionTexts = parsed.options.map((o) => o.text);
-              const correctIdxs = parsed.options.map((o, i) => (o.correct ? i : -1)).filter((i) => i >= 0);
-              const forceCheckbox = /\(choose\s*\d+\)/i.test(parsed.question);
-              const type: LocalQuestionType = forceCheckbox || correctIdxs.length > 1 ? "checkbox" : "multiple-choice";
-              const answer: Question["answer"] =
-                type === "multiple-choice" ? (correctIdxs.length === 1 ? optionTexts[correctIdxs[0]] : "") : correctIdxs.map((ci) => optionTexts[ci]);
-              created.push({
-                id: `${Date.now()}-${idx}-${Math.random()}`,
-                question: parsed.question,
-                type,
-                options: optionTexts,
-                answer,
-                imageFile: null,
-                imageUrl: null,
+            setIsImporting(true);
+            try {
+              const blocks = splitIntoBlocks(raw);
+              const created: FormQuestion[] = [];
+              blocks.forEach((block, idx) => {
+                const parsed = parsePastedBlock(block);
+                if (!parsed) return;
+                const optionTexts = parsed.options.map((o) => o.text);
+                const correctIdxs = parsed.options.map((o, i) => (o.correct ? i : -1)).filter((i) => i >= 0);
+                const forceCheckbox = /\(choose\s*\d+\)/i.test(parsed.question);
+                const type: LocalQuestionType = forceCheckbox || correctIdxs.length > 1 ? "checkbox" : "multiple-choice";
+                const answer: Question["answer"] =
+                  type === "multiple-choice" ? (correctIdxs.length === 1 ? optionTexts[correctIdxs[0]] : "") : correctIdxs.map((ci) => optionTexts[ci]);
+                created.push({
+                  id: `${Date.now()}-${idx}-${Math.random()}`,
+                  question: parsed.question,
+                  type,
+                  options: optionTexts,
+                  answer,
+                  imageFile: null,
+                  imageUrl: null,
+                });
               });
-            });
-            if (created.length) {
-              setQuestions((prev) => [...prev, ...created]);
+              if (created.length) {
+                setQuestions((prev) => [...prev, ...created]);
+              }
+              setLastImportCount(created.length);
+            } finally {
+              setIsImporting(false);
             }
           }}
           disabled={isImporting}
         />
+        {lastImportCount !== null && (
+          <p className="text-xs text-muted-foreground">
+            {lastImportCount > 0
+              ? `Parsed ${lastImportCount} question${lastImportCount === 1 ? "" : "s"} and appended below.`
+              : "No valid questions detected from your paste."}
+          </p>
+        )}
         <p className="text-xs text-muted-foreground">
           Use A./B./C. or 1./2./3. labels. Mark multiple correct with glued letters (CD) or commas (A,C). “(Choose N)” forces checkboxes.
         </p>
@@ -726,14 +773,18 @@ export function QuizBuilderForm({ quiz }: { quiz?: Quiz }) {
       <Separator />
 
       {/* Questions (drag & drop) */}
-      <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={({ active, over }) => {
-        if (!over || active.id === over.id) return;
-        setQuestions((prev) => {
-          const oldIndex = prev.findIndex((q) => q.id === active.id);
-          const newIndex = prev.findIndex((q) => q.id === over.id);
-          return arrayMove(prev, oldIndex, newIndex);
-        });
-      }}>
+      <DndContext
+        sensors={sensors}
+        collisionDetection={closestCenter}
+        onDragEnd={({ active, over }) => {
+          if (!over || active.id === over.id) return;
+          setQuestions((prev) => {
+            const oldIndex = prev.findIndex((q) => q.id === active.id);
+            const newIndex = prev.findIndex((q) => q.id === over.id);
+            return arrayMove(prev, oldIndex, newIndex);
+          });
+        }}
+      >
         <SortableContext items={questions.map((q) => q.id)} strategy={verticalListSortingStrategy}>
           {questions.map((q, qIndex) => (
             <SortableQuestionCard key={q.id} q={q} qIndex={qIndex}>
@@ -744,7 +795,19 @@ export function QuizBuilderForm({ quiz }: { quiz?: Quiz }) {
                     <Textarea
                       id={`question-${q.id}`}
                       value={q.question}
-                      onChange={(e) => setQuestions((prev) => prev.map((x) => x.id === q.id ? { ...x, question: e.target.value } : x))}
+                      onChange={(e) =>
+                        setQuestions((prev) =>
+                          prev.map((x) => (x.id === q.id ? { ...x, question: e.target.value } : x))
+                        )
+                      }
+                      onPaste={(e) => {
+                        const raw = e.clipboardData.getData("text/plain");
+                        if (!raw?.trim()) return;
+                        // Only intercept if the paste looks like a full question block
+                        if (applyParsedToSingleQuestion(q.id, raw)) {
+                          e.preventDefault();
+                        }
+                      }}
                       placeholder="Question text..."
                       rows={3}
                       required
@@ -777,8 +840,20 @@ export function QuizBuilderForm({ quiz }: { quiz?: Quiz }) {
 
                 {q.imageUrl ? (
                   <div className="relative h-48 w-full">
-                    <Image src={q.imageUrl} alt={`Question ${qIndex + 1} image`} fill style={{ objectFit: "contain" }} className="rounded-md border" />
-                    <Button type="button" variant="destructive" size="icon" className="absolute top-2 right-2 h-6 w-6" onClick={() => removeImage(q.id)}>
+                    <Image
+                      src={q.imageUrl}
+                      alt={`Question ${qIndex + 1} image`}
+                      fill
+                      style={{ objectFit: "contain" }}
+                      className="rounded-md border"
+                    />
+                    <Button
+                      type="button"
+                      variant="destructive"
+                      size="icon"
+                      className="absolute top-2 right-2 h-6 w-6"
+                      onClick={() => removeImage(q.id)}
+                    >
                       <Trash2 className="h-4 w-4" />
                     </Button>
                   </div>
@@ -790,7 +865,13 @@ export function QuizBuilderForm({ quiz }: { quiz?: Quiz }) {
                         <span>Add Image (Optional)</span>
                       </div>
                     </Label>
-                    <Input id={`image-upload-${q.id}`} type="file" accept="image/*" className="hidden" onChange={(e) => handleImageUpload(q.id, e)} />
+                    <Input
+                      id={`image-upload-${q.id}`}
+                      type="file"
+                      accept="image/*"
+                      className="hidden"
+                      onChange={(e) => handleImageUpload(q.id, e)}
+                    />
                   </div>
                 )}
 
@@ -798,11 +879,19 @@ export function QuizBuilderForm({ quiz }: { quiz?: Quiz }) {
                   <Label className="text-sm text-muted-foreground">Answer Options & Correct Answer</Label>
                   <div className="mt-2">
                     {q.type === "multiple-choice" && (
-                      <RadioGroup onValueChange={(value) => handleCorrectAnswerChange(q.id, -1, value)} value={q.answer as string} className="space-y-2">
+                      <RadioGroup
+                        onValueChange={(value) => handleCorrectAnswerChange(q.id, -1, value)}
+                        value={q.answer as string}
+                        className="space-y-2"
+                      >
                         {q.options.map((opt, oIndex) => (
                           <div key={oIndex} className="flex items-center gap-2">
                             <RadioGroupItem value={opt} id={`${q.id}-${oIndex}`} />
-                            <Input value={opt} onChange={(e) => handleOptionChange(q.id, oIndex, e.target.value)} placeholder={`Option ${oIndex + 1}`} />
+                            <Input
+                              value={opt}
+                              onChange={(e) => handleOptionChange(q.id, oIndex, e.target.value)}
+                              placeholder={`Option ${oIndex + 1}`}
+                            />
                             <Button type="button" variant="ghost" size="icon" onClick={() => removeOption(q.id, oIndex)}>
                               <X className="h-4 w-4" />
                             </Button>
@@ -819,8 +908,16 @@ export function QuizBuilderForm({ quiz }: { quiz?: Quiz }) {
                           const checked = Array.isArray(q.answer) ? (q.answer as string[]).includes(opt) : false;
                           return (
                             <div key={oIndex} className="flex items-center gap-2">
-                              <Checkbox id={`${q.id}-${oIndex}`} onCheckedChange={() => handleCorrectAnswerChange(q.id, oIndex, opt)} checked={checked} />
-                              <Input value={opt} onChange={(e) => handleOptionChange(q.id, oIndex, e.target.value)} placeholder={`Option ${oIndex + 1}`} />
+                              <Checkbox
+                                id={`${q.id}-${oIndex}`}
+                                onCheckedChange={() => handleCorrectAnswerChange(q.id, oIndex, opt)}
+                                checked={checked}
+                              />
+                              <Input
+                                value={opt}
+                                onChange={(e) => handleOptionChange(q.id, oIndex, e.target.value)}
+                                placeholder={`Option ${oIndex + 1}`}
+                              />
                               <Button type="button" variant="ghost" size="icon" onClick={() => removeOption(q.id, oIndex)}>
                                 <X className="h-4 w-4" />
                               </Button>
@@ -879,7 +976,9 @@ export function QuizBuilderForm({ quiz }: { quiz?: Quiz }) {
               <AlertDialogContent>
                 <AlertDialogHeader>
                   <AlertDialogTitle>Are you absolutely sure?</AlertDialogTitle>
-                  <AlertDialogDescription>This action cannot be undone. This will permanently delete the quiz and all associated student results.</AlertDialogDescription>
+                  <AlertDialogDescription>
+                    This action cannot be undone. This will permanently delete the quiz and all associated student results.
+                  </AlertDialogDescription>
                 </AlertDialogHeader>
                 <AlertDialogFooter>
                   <AlertDialogCancel>Cancel</AlertDialogCancel>

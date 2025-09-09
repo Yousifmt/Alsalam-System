@@ -180,44 +180,78 @@ export default function QuestionsAnalyzerPage() {
       ) : (
         // Otherwise, show the analyzer button accordingly
         <motion.div variants={itemUp}>
-          {/* Security+ students (and admins) get the live link */}
-          {(isSecurityStudent || role === "admin") && (
-            <Button
-              asChild
-              className="bg-blue-900 text-white px-6 py-4 text-base rounded-md shadow-md 
-                         hover:bg-blue-800 hover:shadow-lg transition-all duration-200"
-            >
-              <Link
-                href="https://al-salam-questions-analyzer.vercel.app/"
-                target="_blank"
-                rel="noopener noreferrer"
-              >
-                Go to Questions Analyser
-              </Link>
-            </Button>
-          )}
+  {role === "admin" ? (
+    // ADMIN: show BOTH buttons with staggered animation
+    <motion.div variants={container} className="flex flex-col items-center gap-3">
+      <motion.div variants={itemUp}>
+        <Button
+          asChild
+          className="bg-blue-900 text-white px-6 py-4 text-base rounded-md shadow-md hover:bg-blue-800 hover:shadow-lg transition-all duration-200"
+        >
+          <Link
+            href="https://al-salam-questions-analyzer.vercel.app/"
+            target="_blank"
+            rel="noopener noreferrer"
+          >
+            Security+ Analyser
+          </Link>
+        </Button>
+      </motion.div>
 
-          {/* A+ students: same button, but NO link for now.
-              ------------------------------------------------------------
-              LATER: wrap this Button with <Link href="YOUR_A_PLUS_LINK">…
-              </Link> or convert to <Button asChild> like above.
-              ------------------------------------------------------------ */}
-          {isAPlusStudent && (
-             <Button
-              asChild
-              className="bg-blue-900 text-white px-6 py-4 text-base rounded-md shadow-md 
-                         hover:bg-blue-800 hover:shadow-lg transition-all duration-200"
+      <motion.div variants={itemUp}>
+        <Button
+          asChild
+          className="bg-blue-900 text-white px-6 py-4 text-base rounded-md shadow-md hover:bg-blue-800 hover:shadow-lg transition-all duration-200"
+        >
+          <Link
+            href="https://al-salam-questions-analyzer-a.vercel.app/"
+            target="_blank"
+            rel="noopener noreferrer"
+          >
+            A+ Analyser
+          </Link>
+        </Button>
+      </motion.div>
+    </motion.div>
+  ) : (
+    // STUDENTS: keep existing behavior, but ensure each button keeps its animation
+    <>
+      {isSecurityStudent && (
+        <motion.div variants={itemUp}>
+          <Button
+            asChild
+            className="bg-blue-900 text-white px-6 py-4 text-base rounded-md shadow-md hover:bg-blue-800 hover:shadow-lg transition-all duration-200"
+          >
+            <Link
+              href="https://al-salam-questions-analyzer.vercel.app/"
+              target="_blank"
+              rel="noopener noreferrer"
             >
-              <Link
-                href="https://al-salam-questions-analyzer-a.vercel.app/"
-                target="_blank"
-                rel="noopener noreferrer"
-              >
-                Go to Questions Analyser
-              </Link>
-            </Button>
-          )}
+              Security+ Analyser
+            </Link>
+          </Button>
         </motion.div>
+      )}
+
+      {isAPlusStudent && (
+        <motion.div variants={itemUp}>
+          <Button
+            asChild
+            className="bg-blue-900 text-white px-6 py-4 text-base rounded-md shadow-md hover:bg-blue-800 hover:shadow-lg transition-all duration-200"
+          >
+            <Link
+              href="https://al-salam-questions-analyzer-a.vercel.app/"
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              A+ Analyser
+            </Link>
+          </Button>
+        </motion.div>
+      )}
+    </>
+  )}
+</motion.div>
       )}
     </motion.div>
   );
