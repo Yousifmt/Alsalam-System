@@ -7,6 +7,7 @@ import {
   getClasses, createClass, renameClass, deleteClass,
   assignStudentToClass, type ClassItem
 } from "@/services/class-service";
+import { AnimatePresence, motion } from "framer-motion";
 
 import { Card, CardContent } from "@/components/ui/card";
 import {
@@ -43,6 +44,26 @@ type SortKey =
   | "email-asc" | "email-desc"
   | "class-asc" | "class-desc"
   | "classnum-asc" | "classnum-desc";
+
+
+function Collapse({ show, children }: { show: boolean; children: React.ReactNode }) {
+  return (
+    <AnimatePresence initial={false}>
+      {show ? (
+        <motion.div
+          key="content"
+          initial={{ height: 0, opacity: 0 }}
+          animate={{ height: "auto", opacity: 1 }}
+          exit={{ height: 0, opacity: 0 }}
+          transition={{ duration: 0.28, ease: [0.22, 0.61, 0.36, 1] }}
+          style={{ overflow: "hidden" }}
+        >
+          {children}
+        </motion.div>
+      ) : null}
+    </AnimatePresence>
+  );
+}
 
 export function StudentList() {
   const [students, setStudents] = useState<StudentRow[]>([]);
@@ -309,7 +330,7 @@ export function StudentList() {
 
   return (
     <Card>
-      <CardContent className="p-0">
+      <CardContent className="p-0 overflow-x-hidden">
         {/* Toolbar */}
         <div className="p-4 md:p-5">
           <div className="flex flex-col gap-3 md:gap-4">
@@ -381,128 +402,172 @@ export function StudentList() {
         {/* Separator using your exact color */}
         <Separator className="h-[2px] bg-[rgba(32,43,96,1)]" />
 
-        {/* List */}
+        {/* Table header stays for context; groups render their own list inside each box */}
         {loading ? (
           <div className="flex justify-center items-center p-8 text-muted-foreground h-48">
             <Loader2 className="h-8 w-8 animate-spin" />
             <p className="ml-4">Loading students...</p>
           </div>
         ) : groupedByClass.length > 0 ? (
-          <Table>
-            <TableHeader className="bg-[rgba(32,43,96,0.05)]">
-              <TableRow>
-                <TableHead>Name</TableHead>
-                <TableHead className="hidden md:table-cell">Email</TableHead>
-                <TableHead className="w-64">Class</TableHead>
-                <TableHead className="text-right w-24">Actions</TableHead>
-                <TableHead><span className="sr-only">View</span></TableHead>
-              </TableRow>
-            </TableHeader>
+          <Table className="table-fixed w-full">
+            <TableHeader className="bg-[rgba(32,43,96,0.05)]"></TableHeader>
+              
+            
 
             <TableBody>
               {groupedByClass.map((group) => {
-                const isCollapsed = collapsed.has(group.key);
-                return (
-                  <Fragment key={`grp-${group.key}`}>
-                    <TableRow className="sticky top-0 z-10 bg-[rgba(32,43,96,1)] hover:bg-[rgba(32,43,96,1)] shadow-sm">
-                      <TableCell colSpan={5} className="p-0">
-                        <button
-                          type="button"
-                          onClick={() => toggleGroup(group.key)}
-                          className="w-full flex items-center justify-between px-4 py-2 cursor-pointer select-none focus:outline-none focus:ring-0"
-                          aria-expanded={!isCollapsed}
-                          aria-controls={`group-${group.key}`}
+  const isCollapsed = collapsed.has(group.key);
+  return (
+    <Fragment key={`grp-${group.key}`}>
+      {/* Group header row (unchanged visually) */}
+      <TableRow className="bg-transparent hover:bg-transparent">
+        <TableCell colSpan={5} className="p-0">
+          <div className="px-3 py-2">
+            <button
+              type="button"
+              onClick={() => toggleGroup(group.key)}
+              className="relative w-full flex items-center justify-between rounded-md border bg-card/50 hover:bg-card transition-colors px-4 py-3 text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-[rgba(32,43,96,1)]"
+              aria-expanded={!isCollapsed}
+              aria-controls={`group-${group.key}`}
+            >
+              {/* Left accent bar */}
+              <span
+                aria-hidden
+                className="pointer-events-none absolute left-0 top-0 h-full w-1.5 rounded-l-md bg-[rgba(32,43,96,1)]"
+              />
+              {/* Left cluster */}
+              <div className="flex items-center gap-3">
+                <div className="flex h-7 w-7 items-center justify-center rounded-full bg-[rgba(32,43,96,0.12)]">
+                  <Layers className="h-4 w-4 text-[rgba(32,43,96,1)]" />
+                </div>
+                <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+                  <span className="font-semibold text-sm sm:text-base">{group.title}</span>
+                  <span className="inline-flex items-center rounded-full border px-2 py-0.5 text-[11px] sm:text-xs text-muted-foreground bg-background">
+                    {group.items.length} student{group.items.length === 1 ? "" : "s"}
+                  </span>
+                </div>
+              </div>
+              {/* Right chevron */}
+              <ChevronDown
+                className={`h-5 w-5 text-muted-foreground transition-transform ${isCollapsed ? "" : "rotate-180"}`}
+              />
+            </button>
+          </div>
+        </TableCell>
+      </TableRow>
+
+      {/* Animated drop-down content row */}
+      <TableRow className="bg-transparent hover:bg-transparent">
+        <TableCell colSpan={5} className="p-0">
+          <Collapse show={!isCollapsed}>
+<div className="px-3 pt-2 pb-3" id={`group-${group.key}`}>
+              <div className="rounded-lg border border-[rgba(32,43,96,0.15)] bg-white/60 dark:bg-white/5 shadow-sm overflow-hidden">
+                {/* Header for the inner list (optional; remove if you don't want it) */}
+                <div className="hidden md:grid grid-cols-[1.5fr_2fr_16rem_4rem] gap-3 px-4 py-2.5 bg-[rgba(32,43,96,0.04)] border-b border-[rgba(32,43,96,0.12)] text-[rgba(32,43,96,0.85)] text-xs font-semibold uppercase tracking-wide">
+                  <div>Name</div>
+                  <div>Email</div>
+                  <div>Class</div>
+                  <div className="text-right">Actions</div>
+                </div>
+
+                {/* Students */}
+                <div className="divide-y divide-[rgba(32,43,96,0.08)]">
+                  {group.items.map((student) => {
+                    const current = currentClassById(student.classId ?? undefined);
+                    const value = student.classId ?? "__unassigned__";
+                    const saving = savingUid === student.uid;
+                    const isDeleting = deletingUid === student.uid;
+
+                    return (
+                      <div
+                        key={student.uid}
+                        className="grid grid-cols-1 md:grid-cols-[1.5fr_2fr_16rem_4rem] gap-3 px-4 py-3 hover:bg-[rgba(32,43,96,0.03)] transition-colors"
+                      >
+                        {/* Name */}
+                        <div
+                          onClick={() => handleRowClick(student.uid)}
+                          className="flex items-center gap-3 cursor-pointer"
                         >
-                          {/* Left cluster */}
-                          <div className="flex items-center gap-3">
-                            <div className="flex h-7 w-7 items-center justify-center rounded-full bg-white/15">
-                              <Layers className="h-4 w-4 text-white" />
-                            </div>
+                          <User className="h-5 w-5 text-muted-foreground" />
+                          <span className="leading-none">{student.name}</span>
+                        </div>
 
-                            <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
-                              <span className="text-white font-normal text-base sm:text-lg">
-                                {group.title}
-                              </span>
-
-                              <span className="inline-flex items-center rounded-full bg-white/20 px-2 py-0.5 text-[11px] sm:text-xs text-white font-medium">
-                                {group.items.length} student{group.items.length === 1 ? "" : "s"}
-                              </span>
-                            </div>
-                          </div>
-
-                          {/* Right chevron */}
-                          <div className={`transition-transform ${isCollapsed ? "" : "rotate-180"}`}>
-                            <ChevronDown className="h-5 w-5 text-white" />
-                          </div>
-                        </button>
-                      </TableCell>
-                    </TableRow>
-
-                    {!isCollapsed && group.items.map((student) => {
-                      const current = currentClassById(student.classId ?? undefined);
-                      const value = student.classId ?? "__unassigned__";
-                      const saving = savingUid === student.uid;
-                      const isDeleting = deletingUid === student.uid;
-
-                      return (
-                        <TableRow key={student.uid} id={`group-${group.key}`}>
-                          <TableCell onClick={() => handleRowClick(student.uid)} className="font-medium cursor-pointer">
-                            <div className="flex items-center gap-3">
-                              <User className="h-5 w-5 text-muted-foreground" />
-                              <span>{student.name}</span>
-                            </div>
-                          </TableCell>
-
-                          <TableCell onClick={() => handleRowClick(student.uid)} className="hidden md:table-cell cursor-pointer">
+                        {/* Email */}
+                        <div
+                          onClick={() => handleRowClick(student.uid)}
+                          className="hidden md:flex items-center cursor-pointer"
+                        >
+                          <span className="block truncate max-w-[420px] text-muted-foreground">
                             {student.email}
-                          </TableCell>
+                          </span>
+                        </div>
 
-                          <TableCell>
-                            <div className="flex items-center gap-2">
-                              <Select
-                                value={value}
-                                onValueChange={(v) => handleAssign(student, v)}
-                                disabled={saving || loadingClasses}
-                              >
-                                <SelectTrigger className="w-full">
-                                  <SelectValue placeholder="Assign to class" />
-                                </SelectTrigger>
-                                <SelectContent>
-                                  <SelectItem value="__unassigned__">Unassigned</SelectItem>
-                                  {classes.map((c) => (
-                                    <SelectItem key={c.id} value={c.id}>{c.name}</SelectItem>
-                                  ))}
-                                  <SelectItem value="__create__">+ Create new class…</SelectItem>
-                                </SelectContent>
-                              </Select>
-                              {saving && <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />}
-                            </div>
-                            {current?.name && (
-                              <p className="text-xs text-muted-foreground mt-1">Assigned to: {current.name}</p>
-                            )}
-                          </TableCell>
-
-                          <TableCell className="text-right">
-                            <Button
-                              variant="ghost"
-                              size="icon"
-                              aria-label="Delete student"
-                              onClick={(e) => { e.stopPropagation(); openDelete(student.uid, student.name); }}
-                              disabled={isDeleting}
+                        {/* Class select */}
+                        <div className="flex items-center">
+                          <div className="flex w-full items-center gap-2">
+                            <Select
+                              value={value}
+                              onValueChange={(v) => handleAssign(student, v)}
+                              disabled={saving || loadingClasses}
                             >
-                              {isDeleting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Trash2 className="h-4 w-4" />}
-                            </Button>
-                          </TableCell>
+                              <SelectTrigger className="w-full border-[rgba(32,43,96,0.35)] focus:ring-[rgba(32,43,96,0.45)]">
+                                <SelectValue placeholder="Assign to class" />
+                              </SelectTrigger>
+                              <SelectContent>
+                                <SelectItem value="__unassigned__">Unassigned</SelectItem>
+                                {classes.map((c) => (
+                                  <SelectItem key={c.id} value={c.id}>
+                                    {c.name}
+                                  </SelectItem>
+                                ))}
+                                <SelectItem value="__create__">+ Create new class…</SelectItem>
+                              </SelectContent>
+                            </Select>
+                            {saving && (
+                              <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
+                            )}
+                          </div>
+                        </div>
 
-                          <TableCell className="text-right">
-                            <ChevronRight className="h-5 w-5 text-muted-foreground" />
-                          </TableCell>
-                        </TableRow>
-                      );
-                    })}
-                  </Fragment>
-                );
-              })}
+                        {/* Actions */}
+                        <div className="flex items-center justify-end">
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            aria-label="Delete student"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              openDelete(student.uid, student.name);
+                            }}
+                            disabled={isDeleting}
+                          >
+                            {isDeleting ? (
+                              <Loader2 className="h-4 w-4 animate-spin" />
+                            ) : (
+                              <Trash2 className="h-4 w-4" />
+                            )}
+                          </Button>
+                        </div>
+
+                        {/* Assigned note (mobile) */}
+                        {current?.name ? (
+                          <div className="md:hidden col-span-1 text-xs text-muted-foreground -mt-1">
+                            Assigned to: {current.name}
+                          </div>
+                        ) : null}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            </div>
+          </Collapse>
+        </TableCell>
+      </TableRow>
+    </Fragment>
+  );
+})}
+
             </TableBody>
           </Table>
         ) : (

@@ -1,3 +1,4 @@
+// src/components/QuizInterface.tsx
 "use client";
 
 import React, { useState, useEffect, useRef, useMemo } from "react";
@@ -73,10 +74,36 @@ export function QuizInterface({
     return list;
   });
 
+  // Refs for navigator
+  const navWrapRef = useRef<HTMLDivElement>(null);
+  const navItemRefs = useRef<Array<HTMLButtonElement | null>>([]);
+
+  // Remember/restore vertical scroll to prevent page jump
+  const lastScrollYRef = useRef<number | null>(null);
+  const rememberScrollY = () => { lastScrollYRef.current = window.scrollY; };
+
   // Resume index & answers
   const [currentQuestionIndex, setCurrentQuestionIndex] = useState(initialIndex);
   const [answers, setAnswers] = useState<Record<string, string | string[]>>(initialAnswersByQuestionId ?? {});
   const hydratedRef = useRef(false);
+
+  // Keep your auto-focus and scrollIntoView (horizontal centering)
+  useEffect(() => {
+    const el = navItemRefs.current[currentQuestionIndex];
+    if (el) {
+      el.focus({ preventScroll: true });
+      el.scrollIntoView({ behavior: "smooth", inline: "center", block: "nearest" });
+    }
+  }, [currentQuestionIndex]);
+
+  // Restore prior vertical scroll AFTER the above effect runs
+  useEffect(() => {
+    if (lastScrollYRef.current !== null) {
+      window.scrollTo({ top: lastScrollYRef.current, behavior: "auto" });
+      lastScrollYRef.current = null;
+    }
+  }, [currentQuestionIndex]);
+
   useEffect(() => {
     if (!hydratedRef.current && initialAnswersByQuestionId) {
       setAnswers(prev => ({ ...prev, ...initialAnswersByQuestionId }));
@@ -208,6 +235,7 @@ export function QuizInterface({
 
   const handleNext = () => {
     if (isAtLast) return;
+    rememberScrollY();
     setCurrentQuestionIndex(prev => {
       const idx = prev + 1;
       emitChange(answers, idx);
@@ -217,6 +245,7 @@ export function QuizInterface({
 
   const handlePrev = () => {
     if (isAtFirst) return;
+    rememberScrollY();
     setCurrentQuestionIndex(prev => {
       const idx = prev - 1;
       emitChange(answers, idx);
@@ -244,11 +273,23 @@ export function QuizInterface({
     if (!isGraded) setIsGraded(true);
   };
 
+  // Toggle "Show answers" / "Hide answers" (practice only)
+  const toggleAnswers = () => {
+    if (!isPractice) return;
+    if (!isGraded) {
+      handleGrade(); // same behavior as Grade
+    } else {
+      setIsGraded(false); // hide highlights
+      setScore(null);     // hide score banner
+    }
+  };
+
   const navigateWrongAnswers = (direction: "next" | "prev") => {
     if (!wrongAnswerIndices.length) return;
     if (direction === "prev") {
       const prevWrong = [...wrongAnswerIndices].filter(i => i < currentQuestionIndex).pop();
       if (prevWrong !== undefined) {
+        rememberScrollY();
         setCurrentQuestionIndex(prevWrong);
         emitChange(answers, prevWrong);
       }
@@ -256,6 +297,7 @@ export function QuizInterface({
     }
     const nextWrong = wrongAnswerIndices.find(i => i > currentQuestionIndex);
     if (nextWrong !== undefined) {
+      rememberScrollY();
       setCurrentQuestionIndex(nextWrong);
       emitChange(answers, nextWrong);
     }
@@ -305,6 +347,20 @@ export function QuizInterface({
     return role === "admin" || (!isPractice && isGraded);
   }, [role, isPractice, isGraded]);
 
+  // ------- Navigator helpers -------
+  const getQuestionStatus = (q: Question): "correct" | "wrong" | "unanswered" => {
+    const orig = originalById.get(q.id);
+    const ua = answers[q.id];
+    const hasAnswer = Array.isArray(ua) ? (ua as string[]).length > 0 : !!ua;
+    if (!hasAnswer || !orig) return "unanswered";
+    if (Array.isArray(orig.answer)) {
+      const c = (orig.answer as string[]).slice().sort();
+      const s = ((ua as string[]) || []).slice().sort();
+      return c.length === s.length && c.every((v, i) => v === s[i]) ? "correct" : "wrong";
+    }
+    return ua === orig.answer ? "correct" : "wrong";
+  };
+
   const renderAnswerOptions = () => {
     const orig = originalById.get(currentQuestion.id);
     if (!orig) return null;
@@ -345,14 +401,13 @@ export function QuizInterface({
                 {isGraded && (
                   orig.answer === option ? (
                     <CheckCircle className="h-5 w-5 text-green-600" />
-                  ) : ua === option ? (
+                  ) : (ua === option) ? (
                     <XCircle className="h-5 w-5 text-red-600" />
                   ) : (
                     <div className="h-5 w-5" />
                   )
                 )}
                 <span className="whitespace-pre-wrap break-words">{option}</span>
-
               </Label>
             ))}
           </RadioGroup>
@@ -388,7 +443,6 @@ export function QuizInterface({
                     )
                   )}
                   <span className="whitespace-pre-wrap break-words">{option}</span>
-
                 </Label>
               );
             })}
@@ -413,6 +467,52 @@ export function QuizInterface({
   return (
     <Card className="w-full max-w-3xl shadow-2xl">
       <CardHeader>
+        {/* Single-line navigator (more vertical space + auto-select/scroll) */}
+        <div ref={navWrapRef} className="mb-3 -mt-1 overflow-x-auto">
+          <div className="inline-flex items-center gap-2 whitespace-nowrap py-3 px-1">
+            {processedQuestions.map((q, i) => {
+              const isActive = i === currentQuestionIndex;
+              const status = isGraded ? getQuestionStatus(q) : null;
+
+              const base =
+                "relative inline-flex items-center justify-center h-9 w-9 sm:h-10 sm:w-10 mx-1 my-0.5 rounded-full border text-xs sm:text-sm font-semibold";
+
+              const neutral =
+                "bg-white dark:bg-white/5 border-[rgba(32,43,96,0.25)] text-[rgba(32,43,96,0.9)]";
+              const activeBlue =
+                "bg-[rgba(32,43,96,1)] text-white border-[rgba(32,43,96,1)]";
+              const correct = "bg-green-500 text-white border-green-500";
+              const wrong   = "bg-red-500 text-white border-red-500";
+              const blank   = "bg-gray-400 text-white border-gray-400";
+
+              const colorClass = !isGraded
+                ? (isActive ? activeBlue : neutral)
+                : (status === "correct" ? correct : status === "wrong" ? wrong : blank);
+
+              const activeRing = isActive ? "ring-2 ring-[rgba(32,43,96,1)]" : "";
+
+              return (
+                <button
+                  key={q.id}
+                  type="button"
+                  ref={(el) => { navItemRefs.current[i] = el; }}
+                  onClick={() => {
+                    rememberScrollY();
+                    setCurrentQuestionIndex(i);
+                    onAnswerChange?.(answers, i);
+                  }}
+                  className={`${base} ${colorClass} ${activeRing} focus:outline-none`}
+                  aria-label={`Question ${i + 1}`}
+                  aria-selected={isActive}
+                  tabIndex={isActive ? 0 : -1}
+                >
+                  {i + 1}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+
         {isPractice && !isGraded && (
           <Alert className="mb-4 bg-blue-50 border-blue-200 dark:bg-blue-950 dark:border-blue-800">
             <Beaker className="h-4 w-4 text-blue-500" />
@@ -443,9 +543,28 @@ export function QuizInterface({
           </CardDescription>
         </div>
 
-<CardTitle className="pt-4 text-2xl font-headline whitespace-pre-wrap break-words">
-  {currentQuestion.question}
-</CardTitle>
+        {/* Always-visible toggle (practice only) */}
+        {isPractice && (
+          <div className="mt-2 mb-1 flex justify-end">
+            <Button
+              onClick={toggleAnswers}
+              disabled={role === "admin"}
+              className={cn(
+                "transition-colors",
+                isGraded
+                  ? "bg-white text-[rgba(32,43,96,1)] border border-[rgba(32,43,96,0.3)] hover:bg-accent/10"
+                  : "bg-accent text-accent-foreground hover:bg-accent/90"
+              )}
+              variant={isGraded ? "outline" : undefined}
+            >
+              {isGraded ? "Hide answers" : "Show answers"}
+            </Button>
+          </div>
+        )}
+
+        <CardTitle className="pt-2 text-2xl font-headline whitespace-pre-wrap break-words">
+          {currentQuestion.question}
+        </CardTitle>
 
         {currentQuestion.imageUrl && (
           <div className="relative mt-4 h-64 w-full">
