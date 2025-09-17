@@ -1,11 +1,12 @@
 // src/components/dashboard/final-evaluation-form.tsx
 "use client";
 
-import React, { useState } from "react";
-import { useForm, Controller, type Control, type Path } from "react-hook-form";
+import React, { useEffect, useMemo, useRef, useState } from "react";
+import { useForm, Controller, useWatch, type Control, type Path } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
 import { useRouter } from "next/navigation";
+
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -13,6 +14,9 @@ import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Textarea } from "@/components/ui/textarea";
 import { Card, CardContent, CardHeader, CardFooter } from "@/components/ui/card";
 import { Separator } from "@/components/ui/separator";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Calendar } from "@/components/ui/calendar";
+
 import {
   LockKeyhole,
   Brain,
@@ -23,18 +27,26 @@ import {
   CalendarIcon,
   Award,
   Check,
-  Sparkles,
 } from "lucide-react";
+
 import type { Student, FinalEvaluation } from "@/lib/types";
 import { useToast } from "@/hooks/use-toast";
 import { useLoading } from "@/context/loading-context";
 import { cn } from "@/lib/utils";
-import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { format } from "date-fns";
-import { Calendar } from "@/components/ui/calendar";
 import { saveFinalEvaluation } from "@/services/final-evaluation-service";
 
-// ---------------- Schema ----------------
+/* ---------------- Public props ---------------- */
+export type FinalEvaluationFormProps = {
+  student: Student;
+  mode?: "create" | "edit";
+  initialData?: FinalEvaluation;
+  disableRedirect?: boolean;
+  onSaved?: (updated: FinalEvaluation) => void | Promise<void>;
+};
+
+
+/* ---------------- Schema ---------------- */
 const evaluationCriterionSchema = z.object({
   score: z.coerce.number().min(1).max(5),
   notes: z.string().optional(),
@@ -73,12 +85,16 @@ const finalEvaluationSchema = z.object({
   }),
   trainerNotes: z.string().optional(),
   overallRating: z.enum(["Excellent", "Very Good", "Good", "Acceptable", "Needs Improvement"]),
-  finalRecommendation: z.enum(["Ready for Security+ exam", "Needs review before exam", "Re-study recommended"]),
+  finalRecommendation: z.enum([
+    "Ready for Security+ exam",
+    "Needs review before exam",
+    "Re-study recommended",
+  ]),
 });
 
 type FinalEvaluationFormData = z.infer<typeof finalEvaluationSchema>;
 
-// ---------------- Criteria (typed) ----------------
+/* ---------------- Criteria (typed) ---------------- */
 const section1Criteria = [
   { id: "cybersecurityPrinciples", name: "فهم مبادئ الأمن السيبراني" },
   { id: "threatTypes", name: "التعرف على أنواع التهديدات السيبرانية" },
@@ -116,10 +132,10 @@ const allCriteria = {
   communicationSkills: section4Criteria,
 } as const;
 
-type TechnicalId = typeof section1Criteria[number]["id"];
-type AnalyticalId = typeof section2Criteria[number]["id"];
-type BehavioralId = typeof section3Criteria[number]["id"];
-type CommunicationId = typeof section4Criteria[number]["id"];
+type TechnicalId = (typeof section1Criteria)[number]["id"];
+type AnalyticalId = (typeof section2Criteria)[number]["id"];
+type BehavioralId = (typeof section3Criteria)[number]["id"];
+type CommunicationId = (typeof section4Criteria)[number]["id"];
 
 type CriterionCorePath =
   | `technicalSkills.${TechnicalId}`
@@ -127,13 +143,12 @@ type CriterionCorePath =
   | `behavioralSkills.${BehavioralId}`
   | `communicationSkills.${CommunicationId}`;
 
-// ---------------- Path helper (type-safe) ----------------
+/* ---------------- Helpers ---------------- */
 function isOneOf<T extends readonly string[]>(arr: T, v: string): v is T[number] {
   return (arr as readonly string[]).includes(v);
 }
 function toPath(id: string): Path<FinalEvaluationFormData> | null {
   const [section, key] = id.split(".") as [string, string];
-
   if (section === "technicalSkills" && isOneOf(section1Criteria.map(c => c.id) as unknown as readonly string[], key)) {
     return `technicalSkills.${key}.notes` as Path<FinalEvaluationFormData>;
   }
@@ -149,9 +164,53 @@ function toPath(id: string): Path<FinalEvaluationFormData> | null {
   return null;
 }
 
-// ---------------- Arabic labels (typed) ----------------
+/** Coerce any nullable note to a string for RHF defaults */
+function coerceNote<T extends { score?: number | null; notes?: string | null }>(c: T | undefined) {
+  return { score: Number(c?.score ?? 3), notes: c?.notes ?? "" };
+}
+
+/** Normalize FinalEvaluation -> FinalEvaluationFormData defaults */
+function normalizeInitialData(d: FinalEvaluation): FinalEvaluationFormData {
+  return {
+    courseName: d.courseName ?? "Cybersecurity+",
+    trainerName: d.trainerName ?? "",
+    trainingPeriodStart: new Date(d.trainingPeriodStart),
+    trainingPeriodEnd: new Date(d.trainingPeriodEnd),
+    technicalSkills: {
+      cybersecurityPrinciples: coerceNote(d.technicalSkills?.cybersecurityPrinciples),
+      threatTypes: coerceNote(d.technicalSkills?.threatTypes),
+      protectionTools: coerceNote(d.technicalSkills?.protectionTools),
+      vulnerabilityAnalysis: coerceNote(d.technicalSkills?.vulnerabilityAnalysis),
+      incidentResponse: coerceNote(d.technicalSkills?.incidentResponse),
+      networkProtocols: coerceNote(d.technicalSkills?.networkProtocols),
+      policyImplementation: coerceNote(d.technicalSkills?.policyImplementation),
+      forensics: coerceNote(d.technicalSkills?.forensics),
+    },
+    analyticalSkills: {
+      analyticalThinking: coerceNote(d.analyticalSkills?.analyticalThinking),
+      problemSolving: coerceNote(d.analyticalSkills?.problemSolving),
+      attentionToDetail: coerceNote(d.analyticalSkills?.attentionToDetail),
+      decisionMaking: coerceNote(d.analyticalSkills?.decisionMaking),
+    },
+    behavioralSkills: {
+      discipline: coerceNote(d.behavioralSkills?.discipline),
+      respectForRules: coerceNote(d.behavioralSkills?.respectForRules),
+      interaction: coerceNote(d.behavioralSkills?.interaction),
+      teamwork: coerceNote(d.behavioralSkills?.teamwork),
+    },
+    communicationSkills: {
+      speakingAndExplanation: coerceNote(d.communicationSkills?.speakingAndExplanation),
+      clarity: coerceNote(d.communicationSkills?.clarity),
+    },
+    trainerNotes: d.trainerNotes ?? "",
+    overallRating: d.overallRating,
+    finalRecommendation: d.finalRecommendation,
+  };
+}
+
+/* ---------------- Arabic labels ---------------- */
 const RATINGS = ["Excellent", "Very Good", "Good", "Acceptable", "Needs Improvement"] as const;
-type Rating = typeof RATINGS[number];
+type Rating = (typeof RATINGS)[number];
 const overallRatingsArabic: Record<Rating, string> = {
   Excellent: "ممتاز",
   "Very Good": "جيد جدًا",
@@ -161,22 +220,24 @@ const overallRatingsArabic: Record<Rating, string> = {
 };
 
 const RECS = ["Ready for Security+ exam", "Needs review before exam", "Re-study recommended"] as const;
-type Rec = typeof RECS[number];
+type Rec = (typeof RECS)[number];
 const finalRecommendationsArabic: Record<Rec, string> = {
   "Ready for Security+ exam": "المتدرب جاهز لتقديم الإمتحان",
   "Needs review before exam": "يحتاج إلى مراجعة قبل دخول الإمتحان",
   "Re-study recommended": "يُنصح بإعادة بعض الأجزاء لتعزيز الفهم",
 };
 
-// ---------------- UI row ----------------
+/* ---------------- UI row ---------------- */
 function CriterionRow({
   control,
   corePath,
   label,
+  onUserNoteChange,
 }: {
   control: Control<FinalEvaluationFormData>;
   corePath: CriterionCorePath;
   label: string;
+  onUserNoteChange?: (notesPath: string, value: string) => void;
 }) {
   const scoreName = `${corePath}.score` as Path<FinalEvaluationFormData>;
   const notesName = `${corePath}.notes` as Path<FinalEvaluationFormData>;
@@ -216,7 +277,10 @@ function CriterionRow({
               placeholder="الملاحظات..."
               className="h-20"
               value={typeof field.value === "string" ? field.value : ""}
-              onChange={(e) => field.onChange(e.target.value)}
+              onChange={(e) => {
+                field.onChange(e.target.value);
+                if (onUserNoteChange) onUserNoteChange(notesName, e.target.value);
+              }}
               onBlur={field.onBlur}
               name={field.name}
               ref={field.ref}
@@ -228,49 +292,94 @@ function CriterionRow({
   );
 }
 
-// ---------------- Component ----------------
-export function FinalEvaluationForm({ student }: { student: Student }) {
+/* ---------------- Component ---------------- */
+export function FinalEvaluationForm({
+  student,
+  mode = "create",
+  initialData,
+  disableRedirect,
+  onSaved,
+}: FinalEvaluationFormProps) {
   const router = useRouter();
   const { toast } = useToast();
   const { setIsLoading } = useLoading();
+
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isGeneratingNotes, setIsGeneratingNotes] = useState(false);
 
-  const { control, handleSubmit, setValue, getValues, formState: { errors } } =
-    useForm<FinalEvaluationFormData>({
-      resolver: zodResolver(finalEvaluationSchema),
-      defaultValues: {
-        courseName: "Cybersecurity+",
-        trainerName: "",
-        trainingPeriodStart: new Date(),
-        trainingPeriodEnd: new Date(),
-        technicalSkills: section1Criteria.reduce(
-          (acc, c) => ({ ...acc, [c.id]: { score: 3, notes: "" } }),
-          {} as FinalEvaluationFormData["technicalSkills"]
-        ),
-        analyticalSkills: section2Criteria.reduce(
-          (acc, c) => ({ ...acc, [c.id]: { score: 3, notes: "" } }),
-          {} as FinalEvaluationFormData["analyticalSkills"]
-        ),
-        behavioralSkills: section3Criteria.reduce(
-          (acc, c) => ({ ...acc, [c.id]: { score: 3, notes: "" } }),
-          {} as FinalEvaluationFormData["behavioralSkills"]
-        ),
-        communicationSkills: section4Criteria.reduce(
-          (acc, c) => ({ ...acc, [c.id]: { score: 3, notes: "" } }),
-          {} as FinalEvaluationFormData["communicationSkills"]
-        ),
-        trainerNotes: "",
-        overallRating: "Good",
-        finalRecommendation: "Needs review before exam",
-      },
-    });
+  // Defaults (memoized) + normalize nullable notes for edit mode
+  const defaultValues: FinalEvaluationFormData = useMemo(
+    () =>
+      initialData
+        ? normalizeInitialData(initialData)
+        : {
+            courseName: "Cybersecurity+",
+            trainerName: "",
+            trainingPeriodStart: new Date(),
+            trainingPeriodEnd: new Date(),
+            technicalSkills: section1Criteria.reduce(
+              (acc, c) => ({ ...acc, [c.id]: { score: 3, notes: "" } }),
+              {} as FinalEvaluationFormData["technicalSkills"]
+            ),
+            analyticalSkills: section2Criteria.reduce(
+              (acc, c) => ({ ...acc, [c.id]: { score: 3, notes: "" } }),
+              {} as FinalEvaluationFormData["analyticalSkills"]
+            ),
+            behavioralSkills: section3Criteria.reduce(
+              (acc, c) => ({ ...acc, [c.id]: { score: 3, notes: "" } }),
+              {} as FinalEvaluationFormData["behavioralSkills"]
+            ),
+            communicationSkills: section4Criteria.reduce(
+              (acc, c) => ({ ...acc, [c.id]: { score: 3, notes: "" } }),
+              {} as FinalEvaluationFormData["communicationSkills"]
+            ),
+            trainerNotes: "",
+            overallRating: "Good",
+            finalRecommendation: "Needs review before exam",
+          },
+    [initialData]
+  );
 
-  // ---- Generate notes via API route (no server import) ----
-  const handleGenerateNotes = async () => {
+  const {
+    control,
+    handleSubmit,
+    setValue,
+    getValues,
+    reset,
+    formState: { errors },
+  } = useForm<FinalEvaluationFormData>({
+    resolver: zodResolver(finalEvaluationSchema),
+    defaultValues,
+  });
+
+  // 🔁 Reset the form whenever initialData/defaults change (fixes title/date not updating)
+  useEffect(() => {
+    reset(defaultValues);
+  }, [defaultValues, reset]);
+
+  // Ownership trackers
+  const userEditedNotes = useRef<Set<string>>(new Set()); // user typed -> lock
+  const aiOwnedNotes = useRef<Set<string>>(new Set()); // AI filled -> can overwrite
+  const debounceTimer = useRef<number | null>(null);
+  const mountedRef = useRef(false);
+
+  // Watch scores + overall to trigger AI
+  const SCORE_PATHS = [
+    ...section1Criteria.map((c) => `technicalSkills.${c.id}.score` as const),
+    ...section2Criteria.map((c) => `analyticalSkills.${c.id}.score` as const),
+    ...section3Criteria.map((c) => `behavioralSkills.${c.id}.score` as const),
+    ...section4Criteria.map((c) => `communicationSkills.${c.id}.score` as const),
+  ] as const;
+
+  const watchedScores = useWatch({ control, name: SCORE_PATHS });
+  const watchedOverall = useWatch({ control, name: "overallRating" });
+
+  // Generate (or refresh) notes via API
+  const runGenerateNotes = async () => {
     setIsGeneratingNotes(true);
     try {
       const currentValues = getValues();
+
       const criteriaForAI = (Object.entries(allCriteria) as Array<
         [keyof typeof allCriteria, readonly { id: string; name: string }[]]
       >).flatMap(([sectionKey, criteria]) =>
@@ -305,12 +414,20 @@ export function FinalEvaluationForm({ student }: { student: Student }) {
         throw new Error(data?.error || `HTTP ${res.status}`);
       }
 
-      data.result.notes.forEach((n) => {
-        const path = toPath(n.id);
-        if (path) setValue(path, n.note);
-      });
+      data.result.notes.forEach(({ id, note }) => {
+        const path = toPath(id); // e.g. "technicalSkills.cybersecurityPrinciples.notes"
+        if (!path) return;
 
-      toast({ title: "Notes Generated", description: "تم تعبئة الملاحظات تلقائيًا." });
+        // don't overwrite if user typed
+        if (userEditedNotes.current.has(path)) return;
+
+        const prev = (getValues(path) as string | undefined) ?? "";
+        // overwrite if AI owns it or note is empty
+        if (aiOwnedNotes.current.has(path) || prev.trim() === "") {
+          if (prev !== note) setValue(path, note, { shouldDirty: true });
+          aiOwnedNotes.current.add(path);
+        }
+      });
     } catch (error: any) {
       console.error("Failed to generate notes:", error);
       toast({
@@ -323,59 +440,111 @@ export function FinalEvaluationForm({ student }: { student: Student }) {
     }
   };
 
-  // ---- Save ----
-  const onSaveSubmit = async (data: FinalEvaluationFormData) => {
-    setIsSubmitting(true);
-    const { trainingPeriodStart, trainingPeriodEnd, ...rest } = data;
+  // Debounce helper
+  const scheduleGenerateNotes = () => {
+    if (debounceTimer.current) window.clearTimeout(debounceTimer.current);
+    debounceTimer.current = window.setTimeout(() => {
+      runGenerateNotes();
+    }, 500);
+  };
 
-    const evaluationData: Omit<FinalEvaluation, "id"> = {
-      ...rest,
-      type: "final",
-      studentId: student.uid,
-      studentName: student.name,
-      date: Date.now(),
-      trainingPeriodStart: trainingPeriodStart.getTime(),
-      trainingPeriodEnd: trainingPeriodEnd.getTime(),
-    };
+  // Auto-run when ratings change (skip first render)
+  useEffect(() => {
+    if (!mountedRef.current) {
+      mountedRef.current = true;
+      return;
+    }
+    scheduleGenerateNotes();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [JSON.stringify(watchedScores), watchedOverall]);
 
-    try {
-      await saveFinalEvaluation(evaluationData);
-      toast({
-        title: "Evaluation Saved",
-        description: `The final evaluation for ${student.name} has been saved successfully.`,
-      });
-      setIsLoading(true);
-      router.push(`/dashboard/students/${student.uid}/evaluations`);
-    } catch (error) {
-      console.error("Failed to save final evaluation:", error);
-      toast({
-        title: "Error",
-        description: "Failed to save the final evaluation. Please try again.",
-        variant: "destructive",
-      });
-    } finally {
-      setIsSubmitting(false);
+  // Note ownership toggling based on user edits
+  const handleUserNoteChange = (path: string, val: string) => {
+    if (val.trim() === "") {
+      userEditedNotes.current.delete(path); // unlock
+    } else {
+      userEditedNotes.current.add(path); // lock
+      aiOwnedNotes.current.delete(path);
     }
   };
 
+  // ---- Save ----
+  // inside FinalEvaluationForm
+
+const onSaveSubmit = async (data: FinalEvaluationFormData) => {
+  setIsSubmitting(true);
+
+  const { trainingPeriodStart, trainingPeriodEnd, ...rest } = data;
+
+  // keep original date on edit; set "now" on create
+  const evaluationData = {
+    ...rest,
+    type: "final" as const,
+    studentId: student.uid,
+    studentName: student.name,
+    date: mode === "edit" && initialData?.date ? initialData.date : Date.now(),
+    trainingPeriodStart: trainingPeriodStart.getTime(),
+    trainingPeriodEnd: trainingPeriodEnd.getTime(),
+  };
+
+  try {
+    // Create or update in Firestore
+    const saved = await saveFinalEvaluation(
+      mode === "edit" && initialData?.id
+        ? ({ id: initialData.id, ...evaluationData } as any)
+        : (evaluationData as any)
+    );
+
+    // 🔧 Normalize return to a FinalEvaluation object
+    const resolvedId =
+      typeof saved === "string"
+        ? saved
+        : (saved as any)?.id ?? initialData?.id ?? "";
+
+    const updated: FinalEvaluation = { ...(evaluationData as any), id: resolvedId };
+
+    toast({
+      title: "Evaluation Saved",
+      description:
+        mode === "edit"
+          ? `تم تحديث التقييم النهائي لـ ${student.name} بنجاح.`
+          : `The final evaluation for ${student.name} has been saved successfully.`,
+    });
+
+    await onSaved?.(updated);
+
+    // ✅ Navigate back to the student's evaluations list (unless disabled)
+    if (!disableRedirect) {
+      setIsLoading?.(true);
+      router.push(`/dashboard/students/${student.uid}/evaluations`);
+      // router.refresh(); // optional: force re-fetch on the target page
+    }
+  } catch (error) {
+    console.error("Failed to save final evaluation:", error);
+    toast({
+      title: "Error",
+      description: "Failed to save the final evaluation. Please try again.",
+      variant: "destructive",
+    });
+  } finally {
+    setIsSubmitting(false);
+  }
+};
+
+
+
+
   return (
     <form onSubmit={handleSubmit(onSaveSubmit)} dir="rtl">
-      <div className="flex justify-end mb-4">
-        <Button
-          type="button"
-          variant="outline"
-          onClick={handleGenerateNotes}
-          disabled={isGeneratingNotes || isSubmitting}
-        >
-          {isGeneratingNotes ? <Loader2 className="ml-2 h-4 w-4 animate-spin" /> : <Sparkles className="ml-2 h-4 w-4" />}
-          ملء الملاحظات تلقائيًا بالذكاء الاصطناعي
-        </Button>
-      </div>
-
       <Card>
         <CardHeader>
           <div className="text-center mb-4">
-            <h2 className="text-xl font-bold font-headline text-primary">🛡️ نموذج تقييم نهائي للمتدربين – برنامج الأمن السيبراني</h2>
+            <h2 className="text-xl font-bold font-headline text-primary">
+              🛡️ نموذج تقييم نهائي للمتدربين – برنامج الأمن السيبراني
+              {isGeneratingNotes && (
+                <Loader2 className="ml-2 inline h-4 w-4 animate-spin text-muted-foreground" />
+              )}
+            </h2>
           </div>
           <div className="grid grid-cols-2 gap-x-8 gap-y-4 items-center text-sm border-t border-b py-4">
             <div>
@@ -401,7 +570,10 @@ export function FinalEvaluationForm({ student }: { student: Student }) {
                   render={({ field }) => (
                     <Popover>
                       <PopoverTrigger asChild>
-                        <Button variant="outline" className={cn("w-full justify-start text-left font-normal", !field.value && "text-muted-foreground")}>
+                        <Button
+                          variant="outline"
+                          className={cn("w-full justify-start text-left font-normal", !field.value && "text-muted-foreground")}
+                        >
                           <CalendarIcon className="ml-2 h-4 w-4" />
                           {field.value ? format(field.value, "PPP") : <span>من</span>}
                         </Button>
@@ -419,7 +591,10 @@ export function FinalEvaluationForm({ student }: { student: Student }) {
                   render={({ field }) => (
                     <Popover>
                       <PopoverTrigger asChild>
-                        <Button variant="outline" className={cn("w-full justify-start text-left font-normal", !field.value && "text-muted-foreground")}>
+                        <Button
+                          variant="outline"
+                          className={cn("w-full justify-start text-left font-normal", !field.value && "text-muted-foreground")}
+                        >
                           <CalendarIcon className="ml-2 h-4 w-4" />
                           {field.value ? format(field.value, "PPP") : <span>الى</span>}
                         </Button>
@@ -447,7 +622,13 @@ export function FinalEvaluationForm({ student }: { student: Student }) {
               <div className="col-span-5">الملاحظات</div>
             </div>
             {section1Criteria.map((c) => (
-              <CriterionRow key={c.id} control={control} corePath={`technicalSkills.${c.id}`} label={c.name} />
+              <CriterionRow
+                key={c.id}
+                control={control}
+                corePath={`technicalSkills.${c.id}`}
+                label={c.name}
+                onUserNoteChange={handleUserNoteChange}
+              />
             ))}
           </section>
 
@@ -462,7 +643,13 @@ export function FinalEvaluationForm({ student }: { student: Student }) {
               <div className="col-span-5">الملاحظات</div>
             </div>
             {section2Criteria.map((c) => (
-              <CriterionRow key={c.id} control={control} corePath={`analyticalSkills.${c.id}`} label={c.name} />
+              <CriterionRow
+                key={c.id}
+                control={control}
+                corePath={`analyticalSkills.${c.id}`}
+                label={c.name}
+                onUserNoteChange={handleUserNoteChange}
+              />
             ))}
           </section>
 
@@ -477,7 +664,13 @@ export function FinalEvaluationForm({ student }: { student: Student }) {
               <div className="col-span-5">الملاحظات</div>
             </div>
             {section3Criteria.map((c) => (
-              <CriterionRow key={c.id} control={control} corePath={`behavioralSkills.${c.id}`} label={c.name} />
+              <CriterionRow
+                key={c.id}
+                control={control}
+                corePath={`behavioralSkills.${c.id}`}
+                label={c.name}
+                onUserNoteChange={handleUserNoteChange}
+              />
             ))}
           </section>
 
@@ -492,7 +685,13 @@ export function FinalEvaluationForm({ student }: { student: Student }) {
               <div className="col-span-5">الملاحظات</div>
             </div>
             {section4Criteria.map((c) => (
-              <CriterionRow key={c.id} control={control} corePath={`communicationSkills.${c.id}`} label={c.name} />
+              <CriterionRow
+                key={c.id}
+                control={control}
+                corePath={`communicationSkills.${c.id}`}
+                label={c.name}
+                onUserNoteChange={handleUserNoteChange}
+              />
             ))}
           </section>
 
@@ -563,9 +762,24 @@ export function FinalEvaluationForm({ student }: { student: Student }) {
         </CardContent>
 
         <CardFooter>
-          <Button type="submit" disabled={isSubmitting || isGeneratingNotes} className="w-full">
-            {isSubmitting ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Save className="mr-2 h-4 w-4" />}
-            {isSubmitting ? "جاري الحفظ..." : "حفظ التقييم النهائي"}
+          <Button
+            type="submit"
+            disabled={isSubmitting || isGeneratingNotes}
+            className="w-full"
+            aria-busy={isSubmitting || isGeneratingNotes}
+          >
+            {(isSubmitting || isGeneratingNotes) ? (
+              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+            ) : (
+              <Save className="mr-2 h-4 w-4" />
+            )}
+            {isSubmitting
+              ? "جاري الحفظ..."
+              : isGeneratingNotes
+              ? "جاري توليد الملاحظات..."
+              : mode === "edit"
+              ? "تحديث التقييم النهائي"
+              : "حفظ التقييم النهائي"}
           </Button>
         </CardFooter>
       </Card>

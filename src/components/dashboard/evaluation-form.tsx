@@ -1,8 +1,7 @@
-// src/components/dashboard/evaluation-form.tsx
 "use client";
 
-import React, { useState } from "react";
-import { useForm, Controller } from "react-hook-form";
+import React, { useRef, useState, useEffect, useMemo } from "react";
+import { useForm, Controller, useWatch, type Path } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
 import { useRouter } from "next/navigation";
@@ -11,18 +10,9 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Textarea } from "@/components/ui/textarea";
-import { Card, CardContent, CardHeader, CardTitle, CardFooter } from "@/components/ui/card";
+import { Card, CardContent, CardHeader, CardFooter } from "@/components/ui/card";
 import { Separator } from "@/components/ui/separator";
-import {
-  BrainCircuit,
-  Briefcase,
-  LockKeyhole,
-  UserCheck,
-  Save,
-  Loader2,
-  CalendarIcon,
-  Sparkles,
-} from "lucide-react";
+import { BrainCircuit, Briefcase, LockKeyhole, UserCheck, Save, Loader2, CalendarIcon } from "lucide-react";
 import type { Student, Evaluation } from "@/lib/types";
 import { useToast } from "@/hooks/use-toast";
 import { saveEvaluation } from "@/services/evaluation-service";
@@ -31,9 +21,18 @@ import { cn } from "@/lib/utils";
 import { Popover, PopoverContent, PopoverTrigger } from "../ui/popover";
 import { format } from "date-fns";
 import { Calendar } from "../ui/calendar";
-import type { Path } from "react-hook-form";
 
-// مفاتيح الأقسام كثوابت literal
+/* ---------- Public props ---------- */
+export type EvaluationFormProps = {
+  student: Student;
+  mode?: "create" | "edit";
+  initialData?: Evaluation;
+  disableRedirect?: boolean;
+  onSaved?: (updated: Evaluation) => void | Promise<void>;
+};
+
+
+/* ---------- Keys ---------- */
 const personalKeys = [
   "professionalCommitment",
   "behavioralMaturity",
@@ -41,12 +40,7 @@ const personalKeys = [
   "initiativeAndResponsibility",
 ] as const;
 
-const classroomKeys = [
-  "participationQuality",
-  "dialogueManagement",
-  "teamwork",
-  "cyberRulesCommitment",
-] as const;
+const classroomKeys = ["participationQuality", "dialogueManagement", "teamwork", "cyberRulesCommitment"] as const;
 
 const technicalKeys = [
   "contentComprehension",
@@ -57,36 +51,11 @@ const technicalKeys = [
   "deviceUsage",
 ] as const;
 
-// type guards
-function isOneOf<T extends readonly string[]>(
-  arr: T,
-  v: string
-): v is T[number] {
+function isOneOf<T extends readonly string[]>(arr: T, v: string): v is T[number] {
   return (arr as readonly string[]).includes(v);
 }
 
-// تُعيد Path<EvaluationFormData> مُطابقًا لاتحاد RHF
-function toPath(
-  id: string
-): Path<EvaluationFormData> | null {
-  const [section, key] = id.split(".") as [string, string];
-
-  if (section === "personalSkills" && isOneOf(personalKeys, key)) {
-    return `personalSkills.${key}.notes` as Path<EvaluationFormData>;
-  }
-  if (section === "classroomSkills" && isOneOf(classroomKeys, key)) {
-    return `classroomSkills.${key}.notes` as Path<EvaluationFormData>;
-  }
-  if (section === "technicalSkills" && isOneOf(technicalKeys, key)) {
-    return `technicalSkills.${key}.notes` as Path<EvaluationFormData>;
-  }
-  return null;
-}
-
-// 🔒 لا تستورد أي شيء من '@/ai/flows/...'
-// ✅ سنستخدم الـ API Route: /api/ai/generate-evaluation-notes
-
-/* ───────────────────────── Schemas ───────────────────────── */
+/* ---------- Schema ---------- */
 const evaluationCriterionSchema = z.object({
   score: z.coerce.number().min(1).max(5),
   notes: z.string().optional(),
@@ -120,7 +89,7 @@ const evaluationSchema = z.object({
 
 type EvaluationFormData = z.infer<typeof evaluationSchema>;
 
-/* ───────────────────────── Criteria Lists ───────────────────────── */
+/* ---------- Criteria lists ---------- */
 const section1Criteria = [
   {
     id: "professionalCommitment",
@@ -153,18 +122,14 @@ const section3Criteria = [
   { id: "activityParticipation", name: "المشاركة في الأنشطة", desc: "التفاعل مع الأسئلة أو التمارين أثناء المحاضرة" },
   { id: "askingQuestions", name: "طرح الأسئلة", desc: "إبداء الاهتمام وطرح أسئلة تدل على الفهم" },
   { id: "summarizationAbility", name: "القدرة على التلخيص", desc: "التعبير عن الفهم من خلال تلخيص النقاط الأساسية" },
-  {
-    id: "deviceUsage",
-    name: "استخدام الجهاز",
-    desc: "استخدام الحاسوب أو المنصة الإلكترونية بشكل جيد أثناء التدريب",
-  },
+  { id: "deviceUsage", name: "استخدام الجهاز", desc: "استخدام الحاسوب أو المنصة الإلكترونية بشكل جيد أثناء التدريب" },
 ];
 
 const allCriteria = {
   personalSkills: section1Criteria,
   classroomSkills: section2Criteria,
   technicalSkills: section3Criteria,
-};
+} as const;
 
 const overallRatings: Evaluation["overallRating"][] = [
   "Excellent",
@@ -173,6 +138,7 @@ const overallRatings: Evaluation["overallRating"][] = [
   "Acceptable",
   "Needs Improvement",
 ];
+
 const overallRatingsArabic: Record<Evaluation["overallRating"], string> = {
   Excellent: "ممتاز",
   "Very Good": "جيد جدًا",
@@ -181,17 +147,32 @@ const overallRatingsArabic: Record<Evaluation["overallRating"], string> = {
   "Needs Improvement": "يحتاج إلى تحسين",
 };
 
-/* ───────────────────────── Small Components ───────────────────────── */
+/* ---------- Helpers ---------- */
+function toPath(id: string): Path<EvaluationFormData> | null {
+  const [section, key] = id.split(".") as [string, string];
+  if (section === "personalSkills" && isOneOf(personalKeys, key)) return `personalSkills.${key}.notes` as any;
+  if (section === "classroomSkills" && isOneOf(classroomKeys, key)) return `classroomSkills.${key}.notes` as any;
+  if (section === "technicalSkills" && isOneOf(technicalKeys, key)) return `technicalSkills.${key}.notes` as any;
+  return null;
+}
+type GenerateNotesAPIResponse = {
+  ok: boolean;
+  result?: { notes: { id: string; note: string }[] };
+  error?: string;
+};
+
 const CriterionRow = ({
   control,
   name,
   label,
   description,
+  onUserNoteChange,
 }: {
   control: any;
   name: string;
   label: string;
   description: string;
+  onUserNoteChange?: (notesPath: string, value: string) => void;
 }) => (
   <div className="grid grid-cols-12 gap-4 items-start py-4 border-b">
     <div className="col-span-3">
@@ -203,7 +184,12 @@ const CriterionRow = ({
         control={control}
         name={`${name}.score`}
         render={({ field }) => (
-          <RadioGroup onValueChange={field.onChange} value={String(field.value)} className="flex justify-around" dir="ltr">
+          <RadioGroup
+            onValueChange={(v) => field.onChange(Number(v))}
+            value={String(field.value ?? 3)}
+            className="flex justify-around"
+            dir="ltr"
+          >
             {[1, 2, 3, 4, 5].map((value) => (
               <div key={value} className="flex flex-col items-center space-y-1">
                 <RadioGroupItem value={String(value)} id={`${name}-score-${value}`} />
@@ -218,75 +204,145 @@ const CriterionRow = ({
       <Controller
         control={control}
         name={`${name}.notes`}
-        render={({ field }) => <Textarea {...field} placeholder="الملاحظات..." className="h-20" />}
+        render={({ field }) => (
+          <Textarea
+            placeholder="الملاحظات..."
+            className="h-20"
+            value={typeof field.value === "string" ? field.value : ""}
+            onChange={(e) => {
+              field.onChange(e.target.value);
+              const path = `${name}.notes`;
+              if (onUserNoteChange) onUserNoteChange(path, e.target.value);
+            }}
+          />
+        )}
       />
     </div>
   </div>
 );
 
-/* ───────────────────────── Component ───────────────────────── */
-type GenerateNotesAPIResponse = {
-  ok: boolean;
-  result?: { notes: { id: string; note: string }[] };
-  error?: string;
-};
-
-export function EvaluationForm({ student }: { student: Student }) {
+/* ---------- Main ---------- */
+export function EvaluationForm({
+  student,
+  mode = "create",
+  initialData,
+  disableRedirect,
+  onSaved,
+}: EvaluationFormProps) {
   const router = useRouter();
   const { toast } = useToast();
   const { setIsLoading } = useLoading();
+
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isGeneratingNotes, setIsGeneratingNotes] = useState(false);
+
+  // normalize helper (avoid null notes)
+  const normCrit = (c?: { score?: number; notes?: string | null }) => ({
+    score: c?.score ?? 3,
+    notes: c?.notes ?? "",
+  });
+
+  const defaults: EvaluationFormData = useMemo(
+    () =>
+      initialData
+        ? {
+            date: new Date(initialData.date),
+            trainingTopic: initialData.trainingTopic ?? "",
+            personalSkills: {
+              professionalCommitment: normCrit(initialData.personalSkills?.professionalCommitment),
+              behavioralMaturity: normCrit(initialData.personalSkills?.behavioralMaturity),
+              communicationSkills: normCrit(initialData.personalSkills?.communicationSkills),
+              initiativeAndResponsibility: normCrit(initialData.personalSkills?.initiativeAndResponsibility),
+            },
+            classroomSkills: {
+              participationQuality: normCrit(initialData.classroomSkills?.participationQuality),
+              dialogueManagement: normCrit(initialData.classroomSkills?.dialogueManagement),
+              teamwork: normCrit(initialData.classroomSkills?.teamwork),
+              cyberRulesCommitment: normCrit(initialData.classroomSkills?.cyberRulesCommitment),
+            },
+            technicalSkills: {
+              contentComprehension: normCrit(initialData.technicalSkills?.contentComprehension),
+              focusAndAttention: normCrit(initialData.technicalSkills?.focusAndAttention),
+              activityParticipation: normCrit(initialData.technicalSkills?.activityParticipation),
+              askingQuestions: normCrit(initialData.technicalSkills?.askingQuestions),
+              summarizationAbility: normCrit(initialData.technicalSkills?.summarizationAbility),
+              deviceUsage: normCrit(initialData.technicalSkills?.deviceUsage),
+            },
+            overallRating: initialData.overallRating,
+          }
+        : {
+            date: new Date(),
+            trainingTopic: "",
+            personalSkills: {
+              professionalCommitment: { score: 3, notes: "" },
+              behavioralMaturity: { score: 3, notes: "" },
+              communicationSkills: { score: 3, notes: "" },
+              initiativeAndResponsibility: { score: 3, notes: "" },
+            },
+            classroomSkills: {
+              participationQuality: { score: 3, notes: "" },
+              dialogueManagement: { score: 3, notes: "" },
+              teamwork: { score: 3, notes: "" },
+              cyberRulesCommitment: { score: 3, notes: "" },
+            },
+            technicalSkills: {
+              contentComprehension: { score: 3, notes: "" },
+              focusAndAttention: { score: 3, notes: "" },
+              activityParticipation: { score: 3, notes: "" },
+              askingQuestions: { score: 3, notes: "" },
+              summarizationAbility: { score: 3, notes: "" },
+              deviceUsage: { score: 3, notes: "" },
+            },
+            overallRating: "Good",
+          },
+    [initialData]
+  );
 
   const {
     control,
     handleSubmit,
     setValue,
     getValues,
+    reset,
     formState: { errors },
   } = useForm<EvaluationFormData>({
     resolver: zodResolver(evaluationSchema),
-    defaultValues: {
-      date: new Date(),
-      trainingTopic: "",
-      personalSkills: {
-        professionalCommitment: { score: 3, notes: "" },
-        behavioralMaturity: { score: 3, notes: "" },
-        communicationSkills: { score: 3, notes: "" },
-        initiativeAndResponsibility: { score: 3, notes: "" },
-      },
-      classroomSkills: {
-        participationQuality: { score: 3, notes: "" },
-        dialogueManagement: { score: 3, notes: "" },
-        teamwork: { score: 3, notes: "" },
-        cyberRulesCommitment: { score: 3, notes: "" },
-      },
-      technicalSkills: {
-        contentComprehension: { score: 3, notes: "" },
-        focusAndAttention: { score: 3, notes: "" },
-        activityParticipation: { score: 3, notes: "" },
-        askingQuestions: { score: 3, notes: "" },
-        summarizationAbility: { score: 3, notes: "" },
-        deviceUsage: { score: 3, notes: "" },
-      },
-      overallRating: "Good",
-    },
+    defaultValues: defaults,
   });
 
-  const handleGenerateNotes = async () => {
+  // reset when initialData changes (important for Title/Topic)
+  useEffect(() => {
+    reset(defaults);
+  }, [defaults, reset]);
+
+  // Track ownership/edits
+  const userEditedNotes = useRef<Set<string>>(new Set());
+  const aiOwnedNotes = useRef<Set<string>>(new Set());
+  const debounceTimer = useRef<number | null>(null);
+  const mountedRef = useRef(false);
+
+  // Watch scores + overall to trigger AI
+  const SCORE_PATHS = [
+    ...personalKeys.map((k) => `personalSkills.${k}.score` as const),
+    ...classroomKeys.map((k) => `classroomSkills.${k}.score` as const),
+    ...technicalKeys.map((k) => `technicalSkills.${k}.score` as const),
+  ] as const;
+  const watchedScores = useWatch({ control, name: SCORE_PATHS });
+  const watchedOverall = useWatch({ control, name: "overallRating" });
+
+  const runGenerateNotes = async () => {
     setIsGeneratingNotes(true);
     try {
-      const currentValues = getValues();
+      const current = getValues();
       const criteriaForAI = Object.entries(allCriteria).flatMap(([sectionKey, criteria]) =>
         criteria.map((criterion) => ({
           id: `${sectionKey}.${criterion.id}`,
           name: criterion.name,
-          // @ts-ignore
-          score: Number(currentValues[sectionKey][criterion.id].score),
+          // @ts-ignore index-safe at runtime
+          score: Number(current[sectionKey][criterion.id].score),
         }))
       );
 
-      // ✅ استدعاء الـ API Route بدلاً من استيراد سيرفري
       const res = await fetch("/api/ai/generate-evaluation-notes", {
         method: "POST",
         headers: { "content-type": "application/json" },
@@ -294,80 +350,98 @@ export function EvaluationForm({ student }: { student: Student }) {
       });
 
       const data: GenerateNotesAPIResponse = await res.json();
-      if (!res.ok || !data.ok || !data.result) {
-        throw new Error(data?.error || "Failed to generate notes");
-      }
+      if (!res.ok || !data.ok || !data.result?.notes) throw new Error(data?.error || `HTTP ${res.status}`);
 
-      data.result.notes.forEach((note) => {
-  const path = toPath(note.id);
-  if (path) {
-    setValue(path, note.note);
-  } else {
-    // id غير معروف/خارج المخطط — تجاهله أو سجّله
-    console.warn("Unknown note id:", note.id);
-  }
-});
+      data.result.notes.forEach(({ id, note }) => {
+        const notesPath = toPath(id);
+        if (!notesPath) return;
+        if (userEditedNotes.current.has(notesPath)) return;
 
-
-      toast({
-        title: "Notes Generated",
-        description: "تم تعبئة الملاحظات تلقائيًا بالذكاء الاصطناعي.",
+        const prev = (getValues(notesPath) as string | undefined) ?? "";
+        if (aiOwnedNotes.current.has(notesPath) || prev.trim() === "") {
+          if (prev !== note) setValue(notesPath, note, { shouldDirty: true });
+          aiOwnedNotes.current.add(notesPath);
+        }
       });
-    } catch (error) {
-      console.error("Failed to generate notes:", error);
-      toast({
-        title: "Error",
-        description: "تعذر توليد الملاحظات. حاول مرة أخرى.",
-        variant: "destructive",
-      });
+    } catch (err: any) {
+      console.error("Failed to generate notes:", err);
+      toast({ title: "Error", description: String(err?.message ?? err), variant: "destructive" });
     } finally {
       setIsGeneratingNotes(false);
     }
   };
 
-  const onSaveSubmit = async (data: EvaluationFormData) => {
-    setIsSubmitting(true);
-    const { date, ...restOfData } = data;
-    const evaluationData: Omit<Evaluation, "id"> = {
-      studentId: student.uid,
-      studentName: student.name,
-      date: date.getTime(),
-      type: "daily",
-      ...restOfData,
-    };
+  const scheduleGenerateNotes = () => {
+    if (debounceTimer.current) window.clearTimeout(debounceTimer.current);
+    debounceTimer.current = window.setTimeout(() => {
+      runGenerateNotes();
+    }, 500);
+  };
 
-    try {
-      await saveEvaluation(evaluationData);
-      toast({
-        title: "Evaluation Saved",
-        description: `تم حفظ التقييم اليومي للمتدرب ${student.name} بنجاح.`,
-      });
-      setIsLoading(true);
-      router.push(`/dashboard/students/${student.uid}`);
-    } catch (error) {
-      console.error("Failed to save evaluation:", error);
-      toast({
-        title: "Error",
-        description: "تعذر حفظ التقييم. حاول مرة أخرى.",
-        variant: "destructive",
-      });
-    } finally {
-      setIsSubmitting(false);
+  useEffect(() => {
+    if (!mountedRef.current) {
+      mountedRef.current = true;
+      return;
+    }
+    scheduleGenerateNotes();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [JSON.stringify(watchedScores), watchedOverall]);
+
+  const handleUserNoteChange = (path: string, val: string) => {
+    if (val.trim() === "") {
+      userEditedNotes.current.delete(path);
+    } else {
+      userEditedNotes.current.add(path);
+      aiOwnedNotes.current.delete(path);
     }
   };
 
+  const onSaveSubmit = async (data: EvaluationFormData) => {
+  setIsSubmitting(true);
+  try {
+    const payload: Partial<Pick<Evaluation, "id">> & Omit<Evaluation, "id"> = {
+      ...(mode === "edit" && initialData?.id ? { id: initialData.id } : {}),
+      type: "daily",
+      studentId: student.uid,
+      studentName: student.name,
+      date: data.date.getTime(),
+      trainingTopic: data.trainingTopic,
+      personalSkills: data.personalSkills,
+      classroomSkills: data.classroomSkills,
+      technicalSkills: data.technicalSkills,
+      overallRating: data.overallRating,
+    };
+
+    const saved = await saveEvaluation(payload as any); // returns the saved doc (with id)
+    toast({ title: "Evaluation Saved", description: "تم حفظ التقييم بنجاح." });
+
+    // notify parent (dialog case)
+    await onSaved?.(saved);
+
+    // ✅ navigate back to the student's evaluations list (unless disabled in dialog mode)
+    if (!disableRedirect) {
+      // Optional: show global loader while navigating
+      setIsLoading?.(true);
+      router.push(`/dashboard/students/${student.uid}/evaluations`);
+    }
+  } catch (e) {
+    toast({ title: "Error", description: "تعذر الحفظ.", variant: "destructive" });
+  } finally {
+    setIsSubmitting(false);
+  }
+};
+
+
+
   return (
     <form onSubmit={handleSubmit(onSaveSubmit)} dir="rtl">
-      <div className="flex justify-end mb-4">
-        <Button type="button" variant="outline" onClick={handleGenerateNotes} disabled={isGeneratingNotes || isSubmitting}>
-          {isGeneratingNotes ? <Loader2 className="ml-2 h-4 w-4 animate-spin" /> : <Sparkles className="ml-2 h-4 w-4" />}
-          ملء الملاحظات تلقائيًا بالذكاء الاصطناعي
-        </Button>
-      </div>
       <Card>
         <CardHeader>
           <div className="text-center mb-4">
-            <h2 className="text-xl font-bold font-headline text-primary">🛡️ نموذج تقييم يومي للمتدربين – برنامج الأمن السيبراني</h2>
+            <h2 className="text-xl font-bold font-headline text-primary">
+              🛡️ نموذج تقييم يومي للمتدربين – برنامج الأمن السيبراني
+              {isGeneratingNotes && <Loader2 className="ml-2 inline h-4 w-4 animate-spin text-muted-foreground" />}
+            </h2>
           </div>
           <div className="grid grid-cols-2 gap-4 items-center text-sm">
             <span>
@@ -404,7 +478,9 @@ export function EvaluationForm({ student }: { student: Student }) {
             <Controller
               name="trainingTopic"
               control={control}
-              render={({ field }) => <Input id="training-topic" {...field} placeholder="e.g., Comparing Threat Types" className="text-base" />}
+              render={({ field }) => (
+                <Input id="training-topic" {...field} value={field.value ?? ""} placeholder="e.g., Comparing Threat Types" className="text-base" />
+              )}
             />
             {errors.trainingTopic && <p className="text-red-500 text-xs">{errors.trainingTopic.message}</p>}
           </div>
@@ -412,7 +488,6 @@ export function EvaluationForm({ student }: { student: Student }) {
 
         <CardContent className="space-y-8">
           <Separator />
-          {/* Section 1 */}
           <section>
             <h3 className="text-lg font-bold flex items-center gap-2 mb-2">
               <BrainCircuit /> القسم الأول: المهارات الشخصية والسلوكية
@@ -424,12 +499,11 @@ export function EvaluationForm({ student }: { student: Student }) {
               <div className="col-span-5">الملاحظات</div>
             </div>
             {section1Criteria.map((c) => (
-              <CriterionRow key={c.id} control={control} name={`personalSkills.${c.id}`} label={c.name} description={c.desc} />
+              <CriterionRow key={c.id} control={control} name={`personalSkills.${c.id}`} label={c.name} description={c.desc} onUserNoteChange={handleUserNoteChange} />
             ))}
           </section>
 
           <Separator />
-          {/* Section 2 */}
           <section>
             <h3 className="text-lg font-bold flex items-center gap-2 mb-2">
               <Briefcase /> القسم الثاني: مهارات التفاعل داخل البيئة الصفية
@@ -441,12 +515,11 @@ export function EvaluationForm({ student }: { student: Student }) {
               <div className="col-span-5">الملاحظات</div>
             </div>
             {section2Criteria.map((c) => (
-              <CriterionRow key={c.id} control={control} name={`classroomSkills.${c.id}`} label={c.name} description={c.desc} />
+              <CriterionRow key={c.id} control={control} name={`classroomSkills.${c.id}`} label={c.name} description={c.desc} onUserNoteChange={handleUserNoteChange} />
             ))}
           </section>
 
           <Separator />
-          {/* Section 3 */}
           <section>
             <h3 className="text-lg font-bold flex items-center gap-2 mb-2">
               <LockKeyhole /> القسم الثالث: المهارات العلمية والتقنية (Cybersecurity)
@@ -457,12 +530,11 @@ export function EvaluationForm({ student }: { student: Student }) {
               <div className="col-span-5">الملاحظات</div>
             </div>
             {section3Criteria.map((c) => (
-              <CriterionRow key={c.id} control={control} name={`technicalSkills.${c.id}`} label={c.name} description={c.desc} />
+              <CriterionRow key={c.id} control={control} name={`technicalSkills.${c.id}`} label={c.name} description={c.desc} onUserNoteChange={handleUserNoteChange} />
             ))}
           </section>
 
           <Separator />
-          {/* Overall Rating */}
           <section>
             <h3 className="text-lg font-bold flex items-center gap-2 mb-2">
               <UserCheck /> تقدير اليوم (حسب التقدير الأكاديمي)
@@ -485,9 +557,9 @@ export function EvaluationForm({ student }: { student: Student }) {
         </CardContent>
 
         <CardFooter className="flex-col gap-2 items-stretch">
-          <Button type="submit" disabled={isSubmitting || isGeneratingNotes} className="w-full">
-            {isSubmitting ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Save className="mr-2 h-4 w-4" />}
-            {isSubmitting ? "جاري الحفظ..." : "حفظ التقييم"}
+          <Button type="submit" disabled={isSubmitting || isGeneratingNotes} className="w-full" aria-busy={isSubmitting || isGeneratingNotes}>
+            {(isSubmitting || isGeneratingNotes) ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Save className="mr-2 h-4 w-4" />}
+            {isSubmitting ? "جاري الحفظ..." : isGeneratingNotes ? "جاري توليد الملاحظات..." : mode === "edit" ? "تحديث التقييم" : "حفظ التقييم"}
           </Button>
         </CardFooter>
       </Card>

@@ -3,78 +3,96 @@ import { db } from "@/lib/firebase";
 import {
   collection,
   addDoc,
+  updateDoc,
+  setDoc,
+  doc,
+  getDoc,
+  deleteDoc,
   Timestamp,
   query,
   where,
   getDocs,
-  doc,
-  getDoc,
-  deleteDoc,
+  serverTimestamp,
 } from "firebase/firestore";
 import type { Evaluation } from "@/lib/types";
 
-/**
- * Save a new daily evaluation for a student and return its ID.
- * Caller does NOT need to pass `type`; it is enforced as 'daily' here.
- */
-export async function saveEvaluation(
-  evaluationData: Omit<Evaluation, "id" | "type">
-): Promise<string> {
-  const evaluationsCollection = collection(db, "evaluations");
+type SaveEvaluationInput = Partial<Pick<Evaluation, "id">> & Omit<Evaluation, "id">;
 
-  // Ensure we write Firestore-compatible fields
-  const firestoreDoc = {
-    ...evaluationData,
+const COLLECTION = "evaluations";
+
+/**
+ * Upsert daily evaluation:
+ *  - UPDATE with `updateDoc` when id is present (hard overwrite of provided fields)
+ *  - CREATE with `addDoc` when id is missing
+ * Returns the normalized saved document.
+ */
+export async function saveEvaluation(input: SaveEvaluationInput): Promise<Evaluation> {
+  const { id, ...rest } = input;
+
+  // Prepare Firestore payload
+  const forFirestore = {
+    ...rest,
     type: "daily" as const,
-    date: Timestamp.fromMillis(evaluationData.date),
+    date: Timestamp.fromMillis(rest.date),
+    updatedAt: serverTimestamp(),
   };
 
-  const docRef = await addDoc(evaluationsCollection, firestoreDoc);
-  return docRef.id;
+  if (id) {
+    // Hard update only the fields we pass (no stale merge)
+    const ref = doc(db, COLLECTION, id);
+    await updateDoc(ref, forFirestore as any);
+    const snap = await getDoc(ref);
+    const data = snap.data()!;
+    return {
+      id: ref.id,
+      ...(data as Omit<Evaluation, "id">),
+      date: (data.date as Timestamp).toMillis(),
+    };
+  }
+
+  // Create new
+  const ref = await addDoc(collection(db, COLLECTION), {
+    ...forFirestore,
+    createdAt: serverTimestamp(),
+  });
+  const snap = await getDoc(ref);
+  const data = snap.data()!;
+  return {
+    id: ref.id,
+    ...(data as Omit<Evaluation, "id">),
+    date: (data.date as Timestamp).toMillis(),
+  };
 }
 
-/** Get a single evaluation by its ID */
 export async function getEvaluation(id: string): Promise<Evaluation | null> {
-  const docRef = doc(db, "evaluations", id);
-  const snap = await getDoc(docRef);
-  if (!snap.exists()) {
-    console.warn(`Evaluation with ID ${id} not found.`);
-    return null;
-  }
-  const data = snap.data();
-
+  const ref = doc(db, COLLECTION, id);
+  const snap = await getDoc(ref);
+  if (!snap.exists()) return null;
+  const data = snap.data()!;
   return {
     id: snap.id,
-    ...data,
-    // Convert Firestore Timestamp -> number (ms)
+    ...(data as Omit<Evaluation, "id">),
     date: (data.date as Timestamp).toMillis(),
-  } as Evaluation;
+  };
 }
 
-/** Get all evaluations for a specific student (sorted newest first) */
-export async function getEvaluationsForStudent(
-  studentId: string
-): Promise<Evaluation[]> {
-  const evaluationsCollection = collection(db, "evaluations");
-  const q = query(evaluationsCollection, where("studentId", "==", studentId));
-  const querySnapshot = await getDocs(q);
+export async function getEvaluationsForStudent(studentId: string): Promise<Evaluation[]> {
+  const col = collection(db, COLLECTION);
+  const q = query(col, where("studentId", "==", studentId));
+  const qs = await getDocs(q);
 
-  const evaluations: Evaluation[] = [];
-  querySnapshot.forEach((d) => {
+  const list: Evaluation[] = qs.docs.map((d) => {
     const data = d.data();
-    evaluations.push({
+    return {
       id: d.id,
-      ...data,
+      ...(data as Omit<Evaluation, "id">),
       date: (data.date as Timestamp).toMillis(),
-    } as Evaluation);
+    };
   });
 
-  // Sort client-side to avoid composite index requirement
-  return evaluations.sort((a, b) => b.date - a.date);
+  return list.sort((a, b) => b.date - a.date);
 }
 
-/** Delete an evaluation by its ID */
 export async function deleteEvaluation(id: string): Promise<void> {
-  const ref = doc(db, "evaluations", id);
-  await deleteDoc(ref);
+  await deleteDoc(doc(db, COLLECTION, id));
 }
