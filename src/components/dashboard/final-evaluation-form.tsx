@@ -3,8 +3,8 @@
 
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { useForm, Controller, useWatch, type Control, type Path } from "react-hook-form";
-import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
+import { zodResolver } from "@hookform/resolvers/zod";
 import { useRouter } from "next/navigation";
 
 import { Button } from "@/components/ui/button";
@@ -44,7 +44,6 @@ export type FinalEvaluationFormProps = {
   disableRedirect?: boolean;
   onSaved?: (updated: FinalEvaluation) => void | Promise<void>;
 };
-
 
 /* ---------------- Schema ---------------- */
 const evaluationCriterionSchema = z.object({
@@ -94,7 +93,7 @@ const finalEvaluationSchema = z.object({
 
 type FinalEvaluationFormData = z.infer<typeof finalEvaluationSchema>;
 
-/* ---------------- Criteria (typed) ---------------- */
+/* ---------------- Criteria ---------------- */
 const section1Criteria = [
   { id: "cybersecurityPrinciples", name: "فهم مبادئ الأمن السيبراني" },
   { id: "threatTypes", name: "التعرف على أنواع التهديدات السيبرانية" },
@@ -147,29 +146,24 @@ type CriterionCorePath =
 function isOneOf<T extends readonly string[]>(arr: T, v: string): v is T[number] {
   return (arr as readonly string[]).includes(v);
 }
+
 function toPath(id: string): Path<FinalEvaluationFormData> | null {
   const [section, key] = id.split(".") as [string, string];
-  if (section === "technicalSkills" && isOneOf(section1Criteria.map(c => c.id) as unknown as readonly string[], key)) {
+  if (section === "technicalSkills" && isOneOf(section1Criteria.map(c => c.id) as unknown as readonly string[], key))
     return `technicalSkills.${key}.notes` as Path<FinalEvaluationFormData>;
-  }
-  if (section === "analyticalSkills" && isOneOf(section2Criteria.map(c => c.id) as unknown as readonly string[], key)) {
+  if (section === "analyticalSkills" && isOneOf(section2Criteria.map(c => c.id) as unknown as readonly string[], key))
     return `analyticalSkills.${key}.notes` as Path<FinalEvaluationFormData>;
-  }
-  if (section === "behavioralSkills" && isOneOf(section3Criteria.map(c => c.id) as unknown as readonly string[], key)) {
+  if (section === "behavioralSkills" && isOneOf(section3Criteria.map(c => c.id) as unknown as readonly string[], key))
     return `behavioralSkills.${key}.notes` as Path<FinalEvaluationFormData>;
-  }
-  if (section === "communicationSkills" && isOneOf(section4Criteria.map(c => c.id) as unknown as readonly string[], key)) {
+  if (section === "communicationSkills" && isOneOf(section4Criteria.map(c => c.id) as unknown as readonly string[], key))
     return `communicationSkills.${key}.notes` as Path<FinalEvaluationFormData>;
-  }
   return null;
 }
 
-/** Coerce any nullable note to a string for RHF defaults */
 function coerceNote<T extends { score?: number | null; notes?: string | null }>(c: T | undefined) {
   return { score: Number(c?.score ?? 3), notes: c?.notes ?? "" };
 }
 
-/** Normalize FinalEvaluation -> FinalEvaluationFormData defaults */
 function normalizeInitialData(d: FinalEvaluation): FinalEvaluationFormData {
   return {
     courseName: d.courseName ?? "Cybersecurity+",
@@ -253,10 +247,10 @@ function CriterionRow({
           name={scoreName}
           render={({ field }) => (
             <RadioGroup
-              onValueChange={(v) => field.onChange(Number(v))}
-              value={String(field.value ?? 3)}
-              className="flex justify-around"
               dir="ltr"
+              className="flex justify-around"
+              value={String(field.value ?? 3)}
+              onValueChange={(v) => field.onChange(Number(v))}
             >
               {[1, 2, 3, 4, 5].map((value) => (
                 <div key={value} className="flex flex-col items-center space-y-1">
@@ -279,11 +273,8 @@ function CriterionRow({
               value={typeof field.value === "string" ? field.value : ""}
               onChange={(e) => {
                 field.onChange(e.target.value);
-                if (onUserNoteChange) onUserNoteChange(notesName, e.target.value);
+                onUserNoteChange?.(notesName, e.target.value);
               }}
-              onBlur={field.onBlur}
-              name={field.name}
-              ref={field.ref}
             />
           )}
         />
@@ -307,7 +298,7 @@ export function FinalEvaluationForm({
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isGeneratingNotes, setIsGeneratingNotes] = useState(false);
 
-  // Defaults (memoized) + normalize nullable notes for edit mode
+  // Defaults (memoized)
   const defaultValues: FinalEvaluationFormData = useMemo(
     () =>
       initialData
@@ -352,14 +343,14 @@ export function FinalEvaluationForm({
     defaultValues,
   });
 
-  // 🔁 Reset the form whenever initialData/defaults change (fixes title/date not updating)
+  // reset when defaults change (يحل مشكلة تحديث الحقول عند فتح تعديل جديد)
   useEffect(() => {
     reset(defaultValues);
   }, [defaultValues, reset]);
 
   // Ownership trackers
-  const userEditedNotes = useRef<Set<string>>(new Set()); // user typed -> lock
-  const aiOwnedNotes = useRef<Set<string>>(new Set()); // AI filled -> can overwrite
+  const userEditedNotes = useRef<Set<string>>(new Set());
+  const aiOwnedNotes = useRef<Set<string>>(new Set());
   const debounceTimer = useRef<number | null>(null);
   const mountedRef = useRef(false);
 
@@ -378,16 +369,15 @@ export function FinalEvaluationForm({
   const runGenerateNotes = async () => {
     setIsGeneratingNotes(true);
     try {
-      const currentValues = getValues();
-
+      const current = getValues();
       const criteriaForAI = (Object.entries(allCriteria) as Array<
         [keyof typeof allCriteria, readonly { id: string; name: string }[]]
       >).flatMap(([sectionKey, criteria]) =>
         criteria.map((criterion) => ({
           id: `${sectionKey}.${criterion.id}`,
           name: criterion.name,
-          // @ts-expect-error indexed by schema-defined keys
-          score: Number(currentValues[sectionKey][criterion.id].score),
+          // @ts-expect-error schema-indexed access
+          score: Number(current[sectionKey][criterion.id].score),
         }))
       );
 
@@ -404,25 +394,17 @@ export function FinalEvaluationForm({
         throw new Error(`Unexpected response (${res.status} ${res.statusText}). Body: ${text.slice(0, 300)}`);
       }
 
-      const data: {
-        ok: boolean;
-        result?: { notes: { id: string; note: string }[] };
-        error?: string;
-      } = await res.json();
+      const data: { ok: boolean; result?: { notes: { id: string; note: string }[] }; error?: string } =
+        await res.json();
 
-      if (!res.ok || !data.ok || !data.result?.notes) {
-        throw new Error(data?.error || `HTTP ${res.status}`);
-      }
+      if (!res.ok || !data.ok || !data.result?.notes) throw new Error(data?.error || `HTTP ${res.status}`);
 
       data.result.notes.forEach(({ id, note }) => {
-        const path = toPath(id); // e.g. "technicalSkills.cybersecurityPrinciples.notes"
+        const path = toPath(id);
         if (!path) return;
-
-        // don't overwrite if user typed
         if (userEditedNotes.current.has(path)) return;
 
         const prev = (getValues(path) as string | undefined) ?? "";
-        // overwrite if AI owns it or note is empty
         if (aiOwnedNotes.current.has(path) || prev.trim() === "") {
           if (prev !== note) setValue(path, note, { shouldDirty: true });
           aiOwnedNotes.current.add(path);
@@ -430,109 +412,80 @@ export function FinalEvaluationForm({
       });
     } catch (error: any) {
       console.error("Failed to generate notes:", error);
-      toast({
-        title: "Error",
-        description: String(error?.message ?? error),
-        variant: "destructive",
-      });
+      toast({ title: "Error", description: String(error?.message ?? error), variant: "destructive" });
     } finally {
       setIsGeneratingNotes(false);
     }
   };
 
-  // Debounce helper
   const scheduleGenerateNotes = () => {
     if (debounceTimer.current) window.clearTimeout(debounceTimer.current);
-    debounceTimer.current = window.setTimeout(() => {
-      runGenerateNotes();
-    }, 500);
+    debounceTimer.current = window.setTimeout(runGenerateNotes, 500);
   };
 
-  // Auto-run when ratings change (skip first render)
   useEffect(() => {
-    if (!mountedRef.current) {
-      mountedRef.current = true;
-      return;
-    }
+    if (!mountedRef.current) { mountedRef.current = true; return; }
     scheduleGenerateNotes();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [JSON.stringify(watchedScores), watchedOverall]);
 
-  // Note ownership toggling based on user edits
   const handleUserNoteChange = (path: string, val: string) => {
     if (val.trim() === "") {
-      userEditedNotes.current.delete(path); // unlock
+      userEditedNotes.current.delete(path);
     } else {
-      userEditedNotes.current.add(path); // lock
+      userEditedNotes.current.add(path);
       aiOwnedNotes.current.delete(path);
     }
   };
 
   // ---- Save ----
-  // inside FinalEvaluationForm
+  const onSaveSubmit = async (data: FinalEvaluationFormData) => {
+    setIsSubmitting(true);
 
-const onSaveSubmit = async (data: FinalEvaluationFormData) => {
-  setIsSubmitting(true);
+    const { trainingPeriodStart, trainingPeriodEnd, ...rest } = data;
 
-  const { trainingPeriodStart, trainingPeriodEnd, ...rest } = data;
+    const evaluationData = {
+      ...rest,
+      type: "final" as const,
+      studentId: student.uid,
+      studentName: student.name,
+      date: mode === "edit" && initialData?.date ? initialData.date : Date.now(),
+      trainingPeriodStart: trainingPeriodStart.getTime(),
+      trainingPeriodEnd: trainingPeriodEnd.getTime(),
+    };
 
-  // keep original date on edit; set "now" on create
-  const evaluationData = {
-    ...rest,
-    type: "final" as const,
-    studentId: student.uid,
-    studentName: student.name,
-    date: mode === "edit" && initialData?.date ? initialData.date : Date.now(),
-    trainingPeriodStart: trainingPeriodStart.getTime(),
-    trainingPeriodEnd: trainingPeriodEnd.getTime(),
-  };
+    try {
+      const saved = await saveFinalEvaluation(
+        mode === "edit" && initialData?.id
+          ? ({ id: initialData.id, ...evaluationData } as any)
+          : (evaluationData as any)
+      );
 
-  try {
-    // Create or update in Firestore
-    const saved = await saveFinalEvaluation(
-      mode === "edit" && initialData?.id
-        ? ({ id: initialData.id, ...evaluationData } as any)
-        : (evaluationData as any)
-    );
+      toast({
+        title: "Evaluation Saved",
+        description:
+          mode === "edit"
+            ? `تم تحديث التقييم النهائي لـ ${student.name} بنجاح.`
+            : `The final evaluation for ${student.name} has been saved successfully.`,
+      });
 
-    // 🔧 Normalize return to a FinalEvaluation object
-    const resolvedId =
-      typeof saved === "string"
-        ? saved
-        : (saved as any)?.id ?? initialData?.id ?? "";
+      await onSaved?.(saved);
 
-    const updated: FinalEvaluation = { ...(evaluationData as any), id: resolvedId };
-
-    toast({
-      title: "Evaluation Saved",
-      description:
-        mode === "edit"
-          ? `تم تحديث التقييم النهائي لـ ${student.name} بنجاح.`
-          : `The final evaluation for ${student.name} has been saved successfully.`,
-    });
-
-    await onSaved?.(updated);
-
-    // ✅ Navigate back to the student's evaluations list (unless disabled)
-    if (!disableRedirect) {
-      setIsLoading?.(true);
-      router.push(`/dashboard/students/${student.uid}/evaluations`);
-      // router.refresh(); // optional: force re-fetch on the target page
+      if (!disableRedirect) {
+        setIsLoading?.(true);
+        router.push(`/dashboard/students/${student.uid}/evaluations`);
+      }
+    } catch (error) {
+      console.error("Failed to save final evaluation:", error);
+      toast({
+        title: "Error",
+        description: "Failed to save the final evaluation. Please try again.",
+        variant: "destructive",
+      });
+    } finally {
+      setIsSubmitting(false);
     }
-  } catch (error) {
-    console.error("Failed to save final evaluation:", error);
-    toast({
-      title: "Error",
-      description: "Failed to save the final evaluation. Please try again.",
-      variant: "destructive",
-    });
-  } finally {
-    setIsSubmitting(false);
-  }
-};
-
-
-
+  };
 
   return (
     <form onSubmit={handleSubmit(onSaveSubmit)} dir="rtl">
@@ -541,9 +494,7 @@ const onSaveSubmit = async (data: FinalEvaluationFormData) => {
           <div className="text-center mb-4">
             <h2 className="text-xl font-bold font-headline text-primary">
               🛡️ نموذج تقييم نهائي للمتدربين – برنامج الأمن السيبراني
-              {isGeneratingNotes && (
-                <Loader2 className="ml-2 inline h-4 w-4 animate-spin text-muted-foreground" />
-              )}
+              {isGeneratingNotes && <Loader2 className="ml-2 inline h-4 w-4 animate-spin text-muted-foreground" />}
             </h2>
           </div>
           <div className="grid grid-cols-2 gap-x-8 gap-y-4 items-center text-sm border-t border-b py-4">
@@ -706,9 +657,6 @@ const onSaveSubmit = async (data: FinalEvaluationFormData) => {
                   className="h-32"
                   value={typeof field.value === "string" ? field.value : ""}
                   onChange={(e) => field.onChange(e.target.value)}
-                  onBlur={field.onBlur}
-                  name={field.name}
-                  ref={field.ref}
                 />
               )}
             />

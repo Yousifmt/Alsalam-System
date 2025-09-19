@@ -30,25 +30,12 @@ import {
 import { Badge } from '@/components/ui/badge';
 import { deleteEvaluationAction } from '@/lib/actions/evaluation';
 
-import dynamic from 'next/dynamic';
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
-
-// Forms (no SSR so they behave inside dialogs/popovers)
-const EvaluationForm = dynamic(
-  () => import('@/components/dashboard/evaluation-form').then(m => m.EvaluationForm),
-  { ssr: false }
-);
-const FinalEvaluationForm = dynamic(
-  () => import('@/components/dashboard/final-evaluation-form').then(m => m.FinalEvaluationForm),
-  { ssr: false }
-);
-
+/* ---------------- types/helpers ---------------- */
 type CombinedEvaluation = (Evaluation | FinalEvaluation) & { type: 'daily' | 'final' };
 
-// ---------- helpers ----------
 const compositeKey = (ev: CombinedEvaluation) => `${ev.type}-${ev.id}`;
 
-/** Dedupe by composite key; if we see the key twice, keep the *most recent* by date */
+/** دمج + ترتيب + إزالة أي ازدواج */
 function mergeSortDedupe(dailies: Evaluation[], finals: FinalEvaluation[]): CombinedEvaluation[] {
   const map = new Map<string, CombinedEvaluation>();
 
@@ -71,7 +58,7 @@ function mergeSortDedupe(dailies: Evaluation[], finals: FinalEvaluation[]): Comb
   return arr;
 }
 
-/** Ensure React keys are unique even if backend sends dupes again in a single render */
+/** مفاتيح React مضمونة التفرد داخل نفس الرندر */
 function createRenderKeyFactory() {
   const seen = new Map<string, number>();
   return (ev: CombinedEvaluation) => {
@@ -82,6 +69,7 @@ function createRenderKeyFactory() {
   };
 }
 
+/* ---------------- component ---------------- */
 export default function StudentEvaluationsPage() {
   const params = useParams();
   const router = useRouter();
@@ -92,10 +80,6 @@ export default function StudentEvaluationsPage() {
   const [loading, setLoading] = useState(true);
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [duplicatingId, setDuplicatingId] = useState<string | null>(null);
-
-  // edit dialog state
-  const [editOpen, setEditOpen] = useState(false);
-  const [editEval, setEditEval] = useState<CombinedEvaluation | null>(null);
 
   const { toast } = useToast();
 
@@ -108,9 +92,7 @@ export default function StudentEvaluationsPage() {
         getFinalEvaluationsForStudent(id),
         getStudent(id),
       ]);
-
       const unique = mergeSortDedupe(dailyEvals, finalEvals);
-
       setEvaluations(unique);
       setStudent(studentData);
     } catch (error) {
@@ -123,16 +105,32 @@ export default function StudentEvaluationsPage() {
 
   useEffect(() => { fetchAll(); }, [fetchAll]);
 
+  // ✅ ارجع أحدث بيانات بمجرد العودة لهذه الصفحة (بعد الحفظ من صفحات التعديل)
+  useEffect(() => {
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') {
+        fetchAll();
+      }
+    };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => document.removeEventListener('visibilitychange', onVisible);
+  }, [fetchAll]);
+
   const handleView = (evaluation: CombinedEvaluation) => {
-    const path = evaluation.type === 'daily'
-      ? `/dashboard/evaluations/${evaluation.id}`
-      : `/dashboard/final-evaluations/${evaluation.id}`;
+    const path =
+      evaluation.type === 'daily'
+        ? `/dashboard/evaluations/${evaluation.id}`
+        : `/dashboard/final-evaluations/${evaluation.id}`;
     router.push(path);
   };
 
+  // 🚀 التعديل ينتقل لصفحات الـ edit التي عندك
   const handleEdit = (evaluation: CombinedEvaluation) => {
-    setEditEval(evaluation);
-    setEditOpen(true);
+    const path =
+      evaluation.type === 'daily'
+        ? `/dashboard/students/${id}/evaluations/${evaluation.id}/edit`
+        : `/dashboard/students/${id}/evaluation/${evaluation.id}/edit`; // مطابق لمجلدك: ...\evaluation\[finalId]\edit
+    router.push(path);
   };
 
   const handleDelete = async (evaluation: CombinedEvaluation) => {
@@ -166,18 +164,15 @@ export default function StudentEvaluationsPage() {
           trainingTopic: `${src.trainingTopic} (Copy)`,
           type: 'daily',
         };
-        delete (duplicate as any).id;
-        await saveEvaluation(duplicate);
+        await saveEvaluation(duplicate as any);
       } else {
         const src = evaluation as FinalEvaluation;
         const duplicate: Omit<FinalEvaluation, 'id'> = {
           ...src,
           date: Date.now(),
           courseName: `${src.courseName} (Copy)`,
-          type: 'final',
         };
-        delete (duplicate as any).id;
-        await saveFinalEvaluation(duplicate);
+        await saveFinalEvaluation(duplicate as any);
       }
       toast({ title: 'Duplicated', description: 'Evaluation duplicated successfully.' });
       await fetchAll();
@@ -202,7 +197,6 @@ export default function StudentEvaluationsPage() {
     );
   }
 
-  // Build a render-key factory *per render* to guarantee unique keys in the table
   const renderKeyFor = createRenderKeyFactory();
 
   return (
@@ -246,9 +240,14 @@ export default function StudentEvaluationsPage() {
                         {ev.type.charAt(0).toUpperCase() + ev.type.slice(1)}
                       </Badge>
                     </TableCell>
+
                     <TableCell className="font-medium">{getEvaluationTitle(ev)}</TableCell>
-                    <TableCell>{format(new Date(ev.date), 'PPP')}</TableCell>
+
+                    {/* ✅ نضمن أن التاريخ رقم قبل new Date */}
+                    <TableCell>{format(new Date(Number(ev.date)), 'PPP')}</TableCell>
+
                     <TableCell>{ev.overallRating}</TableCell>
+
                     <TableCell className="text-right">
                       <Button variant="ghost" size="icon" onClick={() => handleView(ev)} className="mr-2" title="View">
                         <Eye className="h-4 w-4" />
@@ -303,77 +302,6 @@ export default function StudentEvaluationsPage() {
           )}
         </CardContent>
       </Card>
-
-      {/* Edit Dialog */}
-      <Dialog
-        open={editOpen}
-        onOpenChange={(open) => {
-          setEditOpen(open);
-          if (!open) setEditEval(null);
-        }}
-      >
-        <DialogContent
-          className="max-w-5xl max-h-[85vh] overflow-y-auto p-0"
-          onOpenAutoFocus={(e) => e.preventDefault()}
-        >
-          <DialogHeader className="px-6 pt-6">
-            <DialogTitle>تعديل التقييم</DialogTitle>
-          </DialogHeader>
-
-          <div className="p-6 pt-2">
-            {editEval && student ? (
-              editEval.type === 'daily' ? (
-                <EvaluationForm
-                  // no "key by date" — rely on reset in the form
-                  student={student}
-                  mode="edit"
-                  initialData={editEval as Evaluation}
-                  disableRedirect
-                  onSaved={async (updated) => {
-                    // ✅ Optimistic patch
-                    setEvaluations((prev) => {
-                      const next = prev.map((ev) =>
-                        ev.id === updated.id && ev.type === 'daily'
-                          ? ({ ...ev, ...updated } as CombinedEvaluation)
-                          : ev
-                      );
-                      // keep list sorted by date desc
-                      next.sort((a, b) => b.date - a.date);
-                      return next;
-                    });
-                    setEditOpen(false);
-                    setEditEval(null);
-                    // optional: also refetch to reconcile server state
-                    // await fetchAll();
-                  }}
-                />
-              ) : (
-                <FinalEvaluationForm
-                  student={student}
-                  mode="edit"
-                  initialData={editEval as FinalEvaluation}
-                  disableRedirect
-                  onSaved={async (updated) => {
-  setEvaluations(prev => {
-    const next = prev.map(ev => (ev.id === updated.id && ev.type === 'daily' ? { ...ev, ...updated } : ev));
-    next.sort((a,b)=>b.date-a.date);
-    return next;
-  });
-  setEditOpen(false);
-  setEditEval(null);
-  await fetchAll(); // <— ensure we see the server’s version when we revisit the page
-}}
-
-                />
-              )
-            ) : (
-              <div className="flex items-center justify-center py-16">
-                <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
-              </div>
-            )}
-          </div>
-        </DialogContent>
-      </Dialog>
     </div>
   );
 }
