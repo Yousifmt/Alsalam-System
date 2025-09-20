@@ -44,6 +44,10 @@ function toQuiz(docId: string, data: any): Quiz {
     course: (data?.course ?? "unassigned") as CourseTag,
   };
 }
+export async function updateQuizFields(id: string, data: Partial<Omit<Quiz, "id">>) {
+  const ref = doc(db, "quizzes", id);
+  await updateDoc(ref, data as any);
+}
 
 export async function createQuiz(quizData: Omit<Quiz, "id">): Promise<string> {
   const payload = {

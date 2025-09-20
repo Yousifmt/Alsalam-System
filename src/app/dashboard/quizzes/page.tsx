@@ -1,4 +1,4 @@
-// FILE: src/app/dashboard/quizzes/_client.tsx  (CLIENT COMPONENT)
+// FILE: src/app/dashboard/quizzes/page.tsx
 "use client";
 
 import React, {
@@ -46,6 +46,10 @@ import {
   GripVertical,
   Shield,
   Cpu,
+  MoreVertical,
+  EyeOff,
+  Eye,
+  Trash2,
 } from "lucide-react";
 
 import dynamicImport from "next/dynamic";
@@ -57,8 +61,18 @@ import {
   getQuizzes,
   getAllResultsForQuiz,
   saveQuizOrder,
+  updateQuizFields, // partial updater for { hidden }
+  deleteQuiz,
 } from "@/services/quiz-service";
 
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+
+/* DnD lazy imports */
 const DragDropContext = dynamicImport(
   () => import("@hello-pangea/dnd").then((m) => m.DragDropContext),
   { ssr: false },
@@ -77,7 +91,7 @@ const Draggable = dynamicImport(
 ──────────────────────────────────────────────────────────────── */
 type CourseTag = "security+" | "a+" | "unassigned";
 type StudentCourseTag = "security+" | "a+";
-type AdminFilter = "all" | "security+" | "a+";
+type AdminFilter = "all" | "security+" | "a+" | "hidden";
 
 const COURSE_PASSWORDS: Record<StudentCourseTag, string> = {
   "security+": "sy0-701",
@@ -110,7 +124,11 @@ const isArchived = (q: any) => {
     q?.deleted === true
   );
 };
+const isHidden = (q: any) => q?.hidden === true;
 
+/* ────────────────────────────────────────────────────────────────
+   Skeletons & layout helpers
+──────────────────────────────────────────────────────────────── */
 function QuizCardSkeleton() {
   return (
     <Card className="flex flex-col">
@@ -245,9 +263,16 @@ function QuizzesPageInner() {
     run();
   }, [roleReady, role, user]);
 
+  /* ── Filters: Admin + Student ───────────────────────────────────────────── */
+
   const adminQuizzes = useMemo(() => {
-    if (adminFilter === "all") return quizzes;
-    return quizzes.filter(
+    if (adminFilter === "hidden") {
+      return quizzes.filter((q) => isHidden(q));
+    }
+    // For All / Security+ / A+, exclude hidden by default
+    const base = quizzes.filter((q) => !isHidden(q));
+    if (adminFilter === "all") return base;
+    return base.filter(
       (q) => (((q as any).course ?? "unassigned") as CourseTag) === adminFilter,
     );
   }, [quizzes, adminFilter]);
@@ -257,9 +282,12 @@ function QuizzesPageInner() {
     return quizzes.filter((q) => {
       const c: CourseTag = ((q as any).course ?? "unassigned") as CourseTag;
       if (isArchived(q)) return false;
+      if (isHidden(q)) return false; // hide from students
       return c === "unassigned" || c === studentCourse;
     });
   }, [quizzes, studentCourse]);
+
+  /* ── DnD + sorting ─────────────────────────────────────────────────────── */
 
   const sortQuizzes = (arr: Quiz[]) =>
     [...arr].sort((a: any, b: any) => {
@@ -299,6 +327,8 @@ function QuizzesPageInner() {
     }
   }
 
+  /* ── Student course code submit ─────────────────────────────────────────── */
+
   async function submitPassword() {
     if (!pendingCourse || !user) return;
     setPwSubmitting(true);
@@ -323,6 +353,8 @@ function QuizzesPageInner() {
     }
   }
 
+  /* ── Badges & role ─────────────────────────────────────────────────────── */
+
   function StatusBadge({ quiz }: { quiz: Quiz }) {
     const status =
       (quiz as any)?.archived === true
@@ -336,6 +368,48 @@ function QuizzesPageInner() {
   }
 
   const roleIsAdmin = role === "admin";
+
+  /* ── Admin card actions (3 dots) ───────────────────────────────────────── */
+
+  async function handleHide(quizId: string) {
+    try {
+      setLoadingAction(`hide-${quizId}`);
+      await updateQuizFields(quizId, { hidden: true }); // partial
+    } finally {
+      setQuizzes((prev) =>
+        prev.map((q) =>
+          q.id === quizId ? ({ ...q, hidden: true } as Quiz) : q,
+        ),
+      );
+      setLoadingAction(null);
+    }
+  }
+
+  async function handleUnhide(quizId: string) {
+    try {
+      setLoadingAction(`unhide-${quizId}`);
+      await updateQuizFields(quizId, { hidden: false }); // partial
+    } finally {
+      setQuizzes((prev) =>
+        prev.map((q) =>
+          q.id === quizId ? ({ ...q, hidden: false } as Quiz) : q,
+        ),
+      );
+      setLoadingAction(null);
+    }
+  }
+
+  async function handleDelete(quizId: string) {
+    try {
+      setLoadingAction(`delete-${quizId}`);
+      await deleteQuiz(quizId);
+    } finally {
+      setQuizzes((prev) => prev.filter((q) => q.id !== quizId));
+      setLoadingAction(null);
+    }
+  }
+
+  /* ── Render ────────────────────────────────────────────────────────────── */
 
   return (
     <div className="space-y-6">
@@ -382,6 +456,12 @@ function QuizzesPageInner() {
           >
             <Cpu className="mr-2 h-4 w-4" />
             A+
+          </Button>
+          <Button
+            variant={adminFilter === "hidden" ? "default" : "outline"}
+            onClick={() => setAdminFilter("hidden")}
+          >
+            Hidden
           </Button>
         </div>
       )}
@@ -486,20 +566,10 @@ function QuizzesPageInner() {
                         <Card
                           ref={drag.innerRef}
                           {...drag.draggableProps}
-                          className="flex flex-col relative"
+                          className="flex flex-col"
                         >
-                          <button
-                            {...drag.dragHandleProps}
-                            className="absolute top-3 right-3 opacity-60 hover:opacity-100 transition"
-                            aria-label="Drag to reorder"
-                            title="Drag to reorder"
-                            disabled={savingOrder}
-                          >
-                            <GripVertical className="h-4 w-4" />
-                          </button>
-
                           <CardHeader>
-                            <div className="flex items-center justify-between">
+                            <div className="flex items-start justify-between gap-2">
                               <CardTitle className="flex items-center gap-2">
                                 {quiz.title}
                                 {(quiz as any).course &&
@@ -513,8 +583,77 @@ function QuizzesPageInner() {
                                     Archived
                                   </Badge>
                                 )}
+                                {isHidden(quiz) && (
+                                  <Badge variant="destructive">Hidden</Badge>
+                                )}
                               </CardTitle>
+
+                              {/* Actions (drag + menu) */}
+                              <div className="flex items-center gap-1">
+                                <button
+                                  {...drag.dragHandleProps}
+                                  className="inline-flex items-center justify-center rounded-md p-1 text-muted-foreground hover:text-foreground hover:bg-muted/50 transition"
+                                  aria-label="Drag to reorder"
+                                  title="Drag to reorder"
+                                  disabled={savingOrder}
+                                >
+                                  <GripVertical className="h-4 w-4" />
+                                </button>
+
+                                <DropdownMenu>
+                                  <DropdownMenuTrigger asChild>
+                                    <button
+                                      className="inline-flex items-center justify-center rounded-md p-1 text-muted-foreground hover:text-foreground hover:bg-muted/50 transition"
+                                      aria-label="More actions"
+                                      title="More actions"
+                                    >
+                                      {loadingAction?.endsWith(quiz.id) ? (
+                                        <Loader2 className="h-4 w-4 animate-spin" />
+                                      ) : (
+                                        <MoreVertical className="h-4 w-4" />
+                                      )}
+                                    </button>
+                                  </DropdownMenuTrigger>
+                                  <DropdownMenuContent align="end" side="bottom">
+                                    {isHidden(quiz) ? (
+                                      <>
+                                        <DropdownMenuItem
+                                          onClick={() => handleUnhide(quiz.id)}
+                                          className="cursor-pointer"
+                                        >
+                                          <Eye className="mr-2 h-4 w-4" />
+                                          Unhide
+                                        </DropdownMenuItem>
+                                        <DropdownMenuItem
+                                          onClick={() => {
+                                            if (
+                                              confirm(
+                                                "Delete this hidden quiz? This cannot be undone.",
+                                              )
+                                            ) {
+                                              handleDelete(quiz.id);
+                                            }
+                                          }}
+                                          className="cursor-pointer text-red-600 focus:text-red-700"
+                                        >
+                                          <Trash2 className="mr-2 h-4 w-4" />
+                                          Delete
+                                        </DropdownMenuItem>
+                                      </>
+                                    ) : (
+                                      <DropdownMenuItem
+                                        onClick={() => handleHide(quiz.id)}
+                                        className="cursor-pointer"
+                                      >
+                                        <EyeOff className="mr-2 h-4 w-4" />
+                                        Hide
+                                      </DropdownMenuItem>
+                                    )}
+                                  </DropdownMenuContent>
+                                </DropdownMenu>
+                              </div>
                             </div>
+
                             <CardDescription>{quiz.description}</CardDescription>
                           </CardHeader>
 

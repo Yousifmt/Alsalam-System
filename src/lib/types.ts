@@ -79,6 +79,8 @@ export interface Quiz {
   archived?: boolean; // explicit archived flag (compat)
   order?: number; // for manual ordering
   course?: CourseTag; // ← NEW: assignment to course (default 'unassigned')
+  hidden?: boolean;   // NEW: hide from students; visible only in Admin > Hidden
+
 }
 
 export interface UserQuiz extends Omit<Quiz, "id"> {
