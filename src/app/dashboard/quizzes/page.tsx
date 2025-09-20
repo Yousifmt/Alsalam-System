@@ -356,16 +356,24 @@ function QuizzesPageInner() {
   /* ── Badges & role ─────────────────────────────────────────────────────── */
 
   function StatusBadge({ quiz }: { quiz: Quiz }) {
-    const status =
-      (quiz as any)?.archived === true
-        ? "Archived"
-        : quiz.results && quiz.results.length > 0
-        ? "Completed"
-        : quiz.status === "Not Started"
-        ? "Not Submitted"
-        : quiz.status;
-    return <Badge variant={getBadgeVariant(status)}>{status}</Badge>;
-  }
+  const status =
+    (quiz as any)?.archived === true
+      ? "Archived"
+      : quiz.results && quiz.results.length > 0
+      ? "Completed"
+      : quiz.status === "Not Started"
+      ? "Not Submitted"
+      : quiz.status;
+  return (
+    <Badge
+      variant={getBadgeVariant(status)}
+      className="whitespace-nowrap shrink-0"
+    >
+      {status}
+    </Badge>
+  );
+}
+
 
   const roleIsAdmin = role === "admin";
 
