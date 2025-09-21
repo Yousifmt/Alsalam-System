@@ -297,35 +297,52 @@ function QuizzesPageInner() {
       return a.title.localeCompare(b.title);
     });
 
-  async function onDragEnd(result: DropResult) {
-    if (!result.destination) return;
-    const { source, destination } = result;
-    if (source.index === destination.index) return;
+async function onDragEnd(result: DropResult) {
+  if (!result.destination) return;
+  const { source, destination } = result;
+  if (source.index === destination.index) return;
 
-    setBeforeDnD(quizzes);
-    const next = Array.from(quizzes);
-    const [moved] = next.splice(source.index, 1);
-    next.splice(destination.index, 0, moved);
-    setQuizzes(next);
+  // Work with the same array you render
+  const visible = sortQuizzes(adminQuizzes);
+  const moved = visible[source.index];
+  visible.splice(source.index, 1);
+  visible.splice(destination.index, 0, moved);
 
-    const pairs = next.map((q, i) => ({ id: q.id, order: (i + 1) * 1000 }));
-    try {
-      setSavingOrder(true);
-      await saveQuizOrder(pairs);
-      setQuizzes((prev) =>
-        prev.map((q) => {
-          const p = pairs.find((x) => x.id === q.id);
-          return p ? ({ ...q, order: p.order } as Quiz) : q;
-        }),
-      );
-    } catch (e) {
-      console.error("Failed to save order:", e);
-      if (beforeDnD) setQuizzes(beforeDnD);
-    } finally {
-      setSavingOrder(false);
-      setBeforeDnD(null);
-    }
+  // Rebuild a new global quizzes array whose ordering matches:
+  // 1) all items in `visible` keep the new order
+  // 2) everything else (e.g., hidden/filtered out) preserves its relative order after
+  const visibleIds = new Set(visible.map((q) => q.id));
+  const others = quizzes.filter((q) => !visibleIds.has(q.id));
+
+  // Concatenate while preserving "others" relative order
+  const next = [...visible, ...others];
+
+  // Optimistic UI update
+  setBeforeDnD(quizzes);
+  setQuizzes(next);
+
+  // Persist order: give spaced numeric order values
+  const pairs = next.map((q, i) => ({ id: q.id, order: (i + 1) * 1000 }));
+
+  try {
+    setSavingOrder(true);
+    await saveQuizOrder(pairs);
+    setQuizzes((prev) =>
+      prev.map((q) => {
+        const p = pairs.find((x) => x.id === q.id);
+        return p ? ({ ...q, order: p.order } as Quiz) : q;
+        // keep types intact
+      })
+    );
+  } catch (e) {
+    console.error("Failed to save order:", e);
+    if (beforeDnD) setQuizzes(beforeDnD);
+  } finally {
+    setSavingOrder(false);
+    setBeforeDnD(null);
   }
+}
+
 
   /* ── Student course code submit ─────────────────────────────────────────── */
 

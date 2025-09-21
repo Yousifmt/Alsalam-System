@@ -153,36 +153,38 @@ export default function StudentEvaluationsPage() {
   };
 
   const handleDuplicate = async (evaluation: CombinedEvaluation) => {
-    if (!evaluation.id) return;
-    setDuplicatingId(evaluation.id);
-    try {
-      if (evaluation.type === 'daily') {
-        const src = evaluation as Evaluation;
-        const duplicate: Omit<Evaluation, 'id'> = {
-          ...src,
-          date: Date.now(),
-          trainingTopic: `${src.trainingTopic} (Copy)`,
-          type: 'daily',
-        };
-        await saveEvaluation(duplicate as any);
-      } else {
-        const src = evaluation as FinalEvaluation;
-        const duplicate: Omit<FinalEvaluation, 'id'> = {
-          ...src,
-          date: Date.now(),
-          courseName: `${src.courseName} (Copy)`,
-        };
-        await saveFinalEvaluation(duplicate as any);
-      }
-      toast({ title: 'Duplicated', description: 'Evaluation duplicated successfully.' });
-      await fetchAll();
-    } catch (error) {
-      console.error('Failed to duplicate evaluation:', error);
-      toast({ title: 'Error', description: 'Could not duplicate the evaluation.', variant: 'destructive' });
-    } finally {
-      setDuplicatingId(null);
+  if (!evaluation.id) return;
+  setDuplicatingId(evaluation.id);
+  try {
+    if (evaluation.type === 'daily') {
+      // remove id at runtime so a NEW doc is created
+      const { id: _omit, ...rest } = evaluation as Evaluation;
+      const duplicate: Omit<Evaluation, 'id'> = {
+        ...rest,
+        date: Date.now(),
+        trainingTopic: `${rest.trainingTopic} (Copy)`,
+        // keep anything else from the original daily evaluation
+      };
+      await saveEvaluation(duplicate as any);
+    } else {
+      const { id: _omit, ...rest } = evaluation as FinalEvaluation;
+      const duplicate: Omit<FinalEvaluation, 'id'> = {
+        ...rest,
+        date: Date.now(),
+        courseName: `${rest.courseName} (Copy)`,
+      };
+      await saveFinalEvaluation(duplicate as any);
     }
-  };
+    toast({ title: 'Duplicated', description: 'Evaluation duplicated successfully.' });
+    await fetchAll();
+  } catch (error) {
+    console.error('Failed to duplicate evaluation:', error);
+    toast({ title: 'Error', description: 'Could not duplicate the evaluation.', variant: 'destructive' });
+  } finally {
+    setDuplicatingId(null);
+  }
+};
+
 
   const getEvaluationTitle = (evaluation: CombinedEvaluation) => {
     if (evaluation.type === 'daily') return (evaluation as Evaluation).trainingTopic;
