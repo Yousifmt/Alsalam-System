@@ -368,16 +368,23 @@ export function QuizInterface({
     const ua = answers[currentQuestion.id];
 
     const getOptionClass = (opt: string, isCheckbox = false) => {
-      if (!isGraded) return "";
-      const correct = orig.answer;
-      const isCorrect = Array.isArray(correct) ? (correct as string[]).includes(opt) : correct === opt;
+  if (!isGraded) return "";
+  const correct = orig.answer;
+  const isCorrect = Array.isArray(correct)
+    ? (correct as string[]).includes(opt)
+    : correct === opt;
 
-      if (isCorrect) return "bg-green-100 dark:bg-green-900/30 border-green-500";
+  if (isCorrect) {
+    return "bg-green-100 dark:bg-green-900/30 border-green-500 dark:text-white";
+  }
 
-      const selected = isCheckbox ? (ua as string[])?.includes(opt) : ua === opt;
-      if (selected && !isCorrect) return "bg-red-100 dark:bg-red-900/30 border-red-500";
-      return "";
-    };
+  const selected = isCheckbox ? (ua as string[])?.includes(opt) : ua === opt;
+  if (selected && !isCorrect) {
+    return "bg-red-100 dark:bg-red-900/30 border-red-500 dark:text-white";
+  }
+  return "";
+};
+
 
     switch (currentQuestion.type) {
       case "multiple-choice":
@@ -478,7 +485,7 @@ export function QuizInterface({
                 "relative inline-flex items-center justify-center h-9 w-9 sm:h-10 sm:w-10 mx-1 my-0.5 rounded-full border text-xs sm:text-sm font-semibold";
 
               const neutral =
-                "bg-white dark:bg-white/5 border-[rgba(32,43,96,0.25)] text-[rgba(32,43,96,0.9)]";
+  "bg-white dark:bg-white/5 border-[rgba(32,43,96,0.25)] text-foreground dark:text-white";
               const activeBlue =
                 "bg-[rgba(32,43,96,1)] text-white border-[rgba(32,43,96,1)]";
               const correct = "bg-green-500 text-white border-green-500";
