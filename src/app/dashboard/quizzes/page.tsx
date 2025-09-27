@@ -14,6 +14,8 @@ import { doc, getDoc, updateDoc } from "firebase/firestore";
 import { db } from "@/lib/firebase";
 import { useAuth } from "@/context/auth-context";
 
+import { BatchGradesDashboard } from "@/components/dashboard/batch-grades-dashboard";
+
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import {
@@ -297,52 +299,51 @@ function QuizzesPageInner() {
       return a.title.localeCompare(b.title);
     });
 
-async function onDragEnd(result: DropResult) {
-  if (!result.destination) return;
-  const { source, destination } = result;
-  if (source.index === destination.index) return;
+  async function onDragEnd(result: DropResult) {
+    if (!result.destination) return;
+    const { source, destination } = result;
+    if (source.index === destination.index) return;
 
-  // Work with the same array you render
-  const visible = sortQuizzes(adminQuizzes);
-  const moved = visible[source.index];
-  visible.splice(source.index, 1);
-  visible.splice(destination.index, 0, moved);
+    // Work with the same array you render
+    const visible = sortQuizzes(adminQuizzes);
+    const moved = visible[source.index];
+    visible.splice(source.index, 1);
+    visible.splice(destination.index, 0, moved);
 
-  // Rebuild a new global quizzes array whose ordering matches:
-  // 1) all items in `visible` keep the new order
-  // 2) everything else (e.g., hidden/filtered out) preserves its relative order after
-  const visibleIds = new Set(visible.map((q) => q.id));
-  const others = quizzes.filter((q) => !visibleIds.has(q.id));
+    // Rebuild a new global quizzes array whose ordering matches:
+    // 1) all items in `visible` keep the new order
+    // 2) everything else (e.g., hidden/filtered out) preserves its relative order after
+    const visibleIds = new Set(visible.map((q) => q.id));
+    const others = quizzes.filter((q) => !visibleIds.has(q.id));
 
-  // Concatenate while preserving "others" relative order
-  const next = [...visible, ...others];
+    // Concatenate while preserving "others" relative order
+    const next = [...visible, ...others];
 
-  // Optimistic UI update
-  setBeforeDnD(quizzes);
-  setQuizzes(next);
+    // Optimistic UI update
+    setBeforeDnD(quizzes);
+    setQuizzes(next);
 
-  // Persist order: give spaced numeric order values
-  const pairs = next.map((q, i) => ({ id: q.id, order: (i + 1) * 1000 }));
+    // Persist order: give spaced numeric order values
+    const pairs = next.map((q, i) => ({ id: q.id, order: (i + 1) * 1000 }));
 
-  try {
-    setSavingOrder(true);
-    await saveQuizOrder(pairs);
-    setQuizzes((prev) =>
-      prev.map((q) => {
-        const p = pairs.find((x) => x.id === q.id);
-        return p ? ({ ...q, order: p.order } as Quiz) : q;
-        // keep types intact
-      })
-    );
-  } catch (e) {
-    console.error("Failed to save order:", e);
-    if (beforeDnD) setQuizzes(beforeDnD);
-  } finally {
-    setSavingOrder(false);
-    setBeforeDnD(null);
+    try {
+      setSavingOrder(true);
+      await saveQuizOrder(pairs);
+      setQuizzes((prev) =>
+        prev.map((q) => {
+          const p = pairs.find((x) => x.id === q.id);
+          return p ? ({ ...q, order: p.order } as Quiz) : q;
+          // keep types intact
+        }),
+      );
+    } catch (e) {
+      console.error("Failed to save order:", e);
+      if (beforeDnD) setQuizzes(beforeDnD);
+    } finally {
+      setSavingOrder(false);
+      setBeforeDnD(null);
+    }
   }
-}
-
 
   /* ── Student course code submit ─────────────────────────────────────────── */
 
@@ -373,24 +374,23 @@ async function onDragEnd(result: DropResult) {
   /* ── Badges & role ─────────────────────────────────────────────────────── */
 
   function StatusBadge({ quiz }: { quiz: Quiz }) {
-  const status =
-    (quiz as any)?.archived === true
-      ? "Archived"
-      : quiz.results && quiz.results.length > 0
-      ? "Completed"
-      : quiz.status === "Not Started"
-      ? "Not Submitted"
-      : quiz.status;
-  return (
-    <Badge
-      variant={getBadgeVariant(status)}
-      className="whitespace-nowrap shrink-0"
-    >
-      {status}
-    </Badge>
-  );
-}
-
+    const status =
+      (quiz as any)?.archived === true
+        ? "Archived"
+        : quiz.results && quiz.results.length > 0
+        ? "Completed"
+        : quiz.status === "Not Started"
+        ? "Not Submitted"
+        : quiz.status;
+    return (
+      <Badge
+        variant={getBadgeVariant(status)}
+        className="whitespace-nowrap shrink-0"
+      >
+        {status}
+      </Badge>
+    );
+  }
 
   const roleIsAdmin = role === "admin";
 
@@ -438,6 +438,10 @@ async function onDragEnd(result: DropResult) {
 
   return (
     <div className="space-y-6">
+      {/* ======== Batch dashboard ABOVE the header (and Create New Quiz) ======== */}
+      {roleIsAdmin && <BatchGradesDashboard />}
+      {/* ======================================================================= */}
+
       {/* Header */}
       <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
         <div>
@@ -489,75 +493,6 @@ async function onDragEnd(result: DropResult) {
             Hidden
           </Button>
         </div>
-      )}
-
-      {/* STUDENT chooser */}
-      {!roleIsAdmin && showChooser && (
-        <Card>
-          <CardHeader>
-            <CardTitle>Choose Your Course</CardTitle>
-            <CardDescription>
-              Select your course and enter the access code once. It will be
-              saved to your profile.
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="flex flex-col gap-3 sm:flex-row">
-            <Button
-              className="flex-1"
-              onClick={() => {
-                setPendingCourse("security+");
-                setPwInput("");
-                setPwDialogOpen(true);
-              }}
-            >
-              <Shield className="mr-2 h-4 w-4" />
-              Security+
-            </Button>
-            <Button
-              className="flex-1"
-              onClick={() => {
-                setPendingCourse("a+");
-                setPwInput("");
-                setPwDialogOpen(true);
-              }}
-            >
-              <Cpu className="mr-2 h-4 w-4" />
-              A+
-            </Button>
-          </CardContent>
-
-          <Dialog open={pwDialogOpen} onOpenChange={setPwDialogOpen}>
-            <DialogContent>
-              <DialogHeader>
-                <DialogTitle>
-                  Enter Access Code ({pendingCourse === "a+" ? "A+" : "Security+"})
-                </DialogTitle>
-              </DialogHeader>
-              <div className="space-y-2">
-                <Label htmlFor="course-code">Code (case-insensitive)</Label>
-                <Input
-                  id="course-code"
-                  placeholder={pendingCourse === "a+" ? "202-1201" : "sy0-701"}
-                  value={pwInput}
-                  onChange={(e) => setPwInput(e.target.value)}
-                  onKeyDown={(e) => e.key === "Enter" && submitPassword()}
-                  autoFocus
-                />
-              </div>
-              <DialogFooter>
-                <Button variant="outline" onClick={() => setPwDialogOpen(false)}>
-                  Cancel
-                </Button>
-                <Button onClick={submitPassword} disabled={pwSubmitting}>
-                  {pwSubmitting ? (
-                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                  ) : null}
-                  Unlock
-                </Button>
-              </DialogFooter>
-            </DialogContent>
-          </Dialog>
-        </Card>
       )}
 
       {/* Content */}
