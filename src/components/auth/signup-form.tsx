@@ -15,7 +15,7 @@ import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 const auth = getAuth(app);
 
 // Keep your existing admin code logic
-const ADMIN_pass = "sy0-701-admin";
+const ADMIN_pass = "sy0-701-admin-353535";
 
 // Student code (case-insensitive). You can also set NEXT_PUBLIC_STUDENT_CODE to override.
 const STUDENT_CODE =
