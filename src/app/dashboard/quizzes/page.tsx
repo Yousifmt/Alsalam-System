@@ -96,7 +96,7 @@ type StudentCourseTag = "security+" | "a+";
 type AdminFilter = "all" | "security+" | "a+" | "hidden";
 
 const COURSE_PASSWORDS: Record<StudentCourseTag, string> = {
-  "security+": "sy0-701",
+  "security+": "sy0-701-student-353535",
   "a+": "202-1201",
 };
 
