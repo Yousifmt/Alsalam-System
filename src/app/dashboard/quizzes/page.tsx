@@ -95,6 +95,8 @@ type CourseTag = "security+" | "a+" | "unassigned";
 type StudentCourseTag = "security+" | "a+";
 type AdminFilter = "all" | "security+" | "a+" | "hidden";
 
+const SECTION_ORDER: CourseTag[] = ["security+", "a+", "unassigned"];
+
 const COURSE_PASSWORDS: Record<StudentCourseTag, string> = {
   "security+": "sy0-701-student-353535",
   "a+": "202-1201",
@@ -128,6 +130,10 @@ const isArchived = (q: any) => {
 };
 const isHidden = (q: any) => q?.hidden === true;
 
+function courseOf(q: Quiz): CourseTag {
+  return ((q as any).course ?? "unassigned") as CourseTag;
+}
+
 /* ────────────────────────────────────────────────────────────────
    Skeletons & layout helpers
 ──────────────────────────────────────────────────────────────── */
@@ -151,6 +157,21 @@ function QuizCardSkeleton() {
 function Grid({ children }: { children: ReactNode }) {
   return (
     <div className="grid gap-6 md:grid-cols-2 xl:grid-cols-3">{children}</div>
+  );
+}
+
+function SectionDivider({ label }: { label: string }) {
+  return (
+    <div className="relative my-6">
+      <div className="absolute inset-0 flex items-center">
+        <span className="w-full border-t" />
+      </div>
+      <div className="relative flex justify-center">
+        <span className="bg-background px-3 text-xs font-medium tracking-wider text-muted-foreground uppercase">
+          {label}
+        </span>
+      </div>
+    </div>
   );
 }
 
@@ -193,21 +214,16 @@ function QuizzesPageInner() {
   const [quizzes, setQuizzes] = useState<Quiz[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadingAction, setLoadingAction] = useState<string | null>(null);
-  const [averageScores, setAverageScores] = useState<Record<
-    string,
-    number | null
-  >>({});
+  const [averageScores, setAverageScores] = useState<Record<string, number | null>>({});
   const [savingOrder, setSavingOrder] = useState(false);
   const [beforeDnD, setBeforeDnD] = useState<Quiz[] | null>(null);
 
   // STUDENT: first-visit selection
-  const [studentCourse, setStudentCourse] =
-    useState<StudentCourseTag | null>(null);
+  const [studentCourse, setStudentCourse] = useState<StudentCourseTag | null>(null);
   const [showChooser, setShowChooser] = useState(false);
   const [pwDialogOpen, setPwDialogOpen] = useState(false);
   const [pwInput, setPwInput] = useState("");
-  const [pendingCourse, setPendingCourse] =
-    useState<StudentCourseTag | null>(null);
+  const [pendingCourse, setPendingCourse] = useState<StudentCourseTag | null>(null);
   const [pwSubmitting, setPwSubmitting] = useState(false);
 
   // ADMIN: filter
@@ -224,10 +240,7 @@ function QuizzesPageInner() {
       if (!roleReady || !user) return;
       setLoading(true);
       try {
-        const fetched =
-          role === "admin"
-            ? await getQuizzes()
-            : await getQuizzesForUser(user.uid);
+        const fetched = role === "admin" ? await getQuizzes() : await getQuizzesForUser(user.uid);
         setQuizzes(fetched);
 
         if (role === "admin") {
@@ -236,10 +249,7 @@ function QuizzesPageInner() {
             const results = await getAllResultsForQuiz(q.id);
             scores[q.id] = results.length
               ? Math.round(
-                  results.reduce(
-                    (acc, r) => acc + (r.score / r.total) * 100,
-                    0,
-                  ) / results.length,
+                  results.reduce((acc, r) => acc + (r.score / r.total) * 100, 0) / results.length,
                 )
               : null;
           }
@@ -274,22 +284,20 @@ function QuizzesPageInner() {
     // For All / Security+ / A+, exclude hidden by default
     const base = quizzes.filter((q) => !isHidden(q));
     if (adminFilter === "all") return base;
-    return base.filter(
-      (q) => (((q as any).course ?? "unassigned") as CourseTag) === adminFilter,
-    );
+    return base.filter((q) => courseOf(q) === (adminFilter as CourseTag));
   }, [quizzes, adminFilter]);
 
   const studentQuizzes = useMemo(() => {
     if (!studentCourse) return [];
     return quizzes.filter((q) => {
-      const c: CourseTag = ((q as any).course ?? "unassigned") as CourseTag;
+      const c: CourseTag = courseOf(q);
       if (isArchived(q)) return false;
       if (isHidden(q)) return false; // hide from students
       return c === "unassigned" || c === studentCourse;
     });
   }, [quizzes, studentCourse]);
 
-  /* ── DnD + sorting ─────────────────────────────────────────────────────── */
+  /* ── Sorting & Grouping ─────────────────────────────────────────────────── */
 
   const sortQuizzes = (arr: Quiz[]) =>
     [...arr].sort((a: any, b: any) => {
@@ -299,31 +307,53 @@ function QuizzesPageInner() {
       return a.title.localeCompare(b.title);
     });
 
+  function groupByCourseTag(arr: Quiz[]): Record<CourseTag, Quiz[]> {
+    const groups: Record<CourseTag, Quiz[]> = {
+      "security+": [],
+      "a+": [],
+      "unassigned": [],
+    };
+    for (const q of arr) {
+      groups[courseOf(q)].push(q);
+    }
+    // Keep each group stable by saved order/title
+    for (const key of SECTION_ORDER) groups[key] = sortQuizzes(groups[key]);
+    return groups;
+  }
+
+  /* ── DnD (group-aware) ─────────────────────────────────────────────────── */
+
   async function onDragEnd(result: DropResult) {
     if (!result.destination) return;
     const { source, destination } = result;
-    if (source.index === destination.index) return;
 
-    // Work with the same array you render
-    const visible = sortQuizzes(adminQuizzes);
-    const moved = visible[source.index];
-    visible.splice(source.index, 1);
-    visible.splice(destination.index, 0, moved);
+    // Restrict reordering to within the same section to avoid visual mismatch
+    if (source.droppableId !== destination.droppableId) {
+      return; // ignore cross-section drops
+    }
 
-    // Rebuild a new global quizzes array whose ordering matches:
-    // 1) all items in `visible` keep the new order
-    // 2) everything else (e.g., hidden/filtered out) preserves its relative order after
-    const visibleIds = new Set(visible.map((q) => q.id));
+    // Work off the currently visible (filtered) admin list, grouped
+    const grouped = groupByCourseTag(adminQuizzes);
+    const tag = source.droppableId as CourseTag;
+
+    const list = [...grouped[tag]];
+    const [moved] = list.splice(source.index, 1);
+    list.splice(destination.index, 0, moved);
+    grouped[tag] = list;
+
+    // Flatten in canonical section order -> new visible order
+    const visibleCombined = SECTION_ORDER.flatMap((t) => grouped[t]);
+
+    // Merge back with non-visible items, preserving their relative order
+    const visibleIds = new Set(visibleCombined.map((q) => q.id));
     const others = quizzes.filter((q) => !visibleIds.has(q.id));
-
-    // Concatenate while preserving "others" relative order
-    const next = [...visible, ...others];
+    const next = [...visibleCombined, ...others];
 
     // Optimistic UI update
     setBeforeDnD(quizzes);
     setQuizzes(next);
 
-    // Persist order: give spaced numeric order values
+    // Persist with spaced numeric order values
     const pairs = next.map((q, i) => ({ id: q.id, order: (i + 1) * 1000 }));
 
     try {
@@ -333,7 +363,6 @@ function QuizzesPageInner() {
         prev.map((q) => {
           const p = pairs.find((x) => x.id === q.id);
           return p ? ({ ...q, order: p.order } as Quiz) : q;
-          // keep types intact
         }),
       );
     } catch (e) {
@@ -379,14 +408,11 @@ function QuizzesPageInner() {
         ? "Archived"
         : quiz.results && quiz.results.length > 0
         ? "Completed"
-        : quiz.status === "Not Started"
+        : (quiz as any).status === "Not Started"
         ? "Not Submitted"
-        : quiz.status;
+        : (quiz as any).status;
     return (
-      <Badge
-        variant={getBadgeVariant(status)}
-        className="whitespace-nowrap shrink-0"
-      >
+      <Badge variant={getBadgeVariant(status)} className="whitespace-nowrap shrink-0">
         {status}
       </Badge>
     );
@@ -401,11 +427,7 @@ function QuizzesPageInner() {
       setLoadingAction(`hide-${quizId}`);
       await updateQuizFields(quizId, { hidden: true }); // partial
     } finally {
-      setQuizzes((prev) =>
-        prev.map((q) =>
-          q.id === quizId ? ({ ...q, hidden: true } as Quiz) : q,
-        ),
-      );
+      setQuizzes((prev) => prev.map((q) => (q.id === quizId ? ({ ...q, hidden: true } as Quiz) : q)));
       setLoadingAction(null);
     }
   }
@@ -415,11 +437,7 @@ function QuizzesPageInner() {
       setLoadingAction(`unhide-${quizId}`);
       await updateQuizFields(quizId, { hidden: false }); // partial
     } finally {
-      setQuizzes((prev) =>
-        prev.map((q) =>
-          q.id === quizId ? ({ ...q, hidden: false } as Quiz) : q,
-        ),
-      );
+      setQuizzes((prev) => prev.map((q) => (q.id === quizId ? ({ ...q, hidden: false } as Quiz) : q)));
       setLoadingAction(null);
     }
   }
@@ -451,10 +469,7 @@ function QuizzesPageInner() {
           </p>
         </div>
         {roleIsAdmin && (
-          <Button
-            asChild
-            className="bg-accent text-accent-foreground hover:bg-accent/90"
-          >
+          <Button asChild className="bg-accent text-accent-foreground hover:bg-accent/90">
             <Link href="/dashboard/quizzes/new">
               <PlusCircle className="mr-2 h-4 w-4" />
               Create New Quiz
@@ -466,10 +481,7 @@ function QuizzesPageInner() {
       {/* ADMIN filter */}
       {roleIsAdmin && (
         <div className="flex flex-wrap items-center gap-2">
-          <Button
-            variant={adminFilter === "all" ? "default" : "outline"}
-            onClick={() => setAdminFilter("all")}
-          >
+          <Button variant={adminFilter === "all" ? "default" : "outline"} onClick={() => setAdminFilter("all")}>
             All
           </Button>
           <Button
@@ -479,17 +491,11 @@ function QuizzesPageInner() {
             <Shield className="mr-2 h-4 w-4" />
             Security+
           </Button>
-          <Button
-            variant={adminFilter === "a+" ? "default" : "outline"}
-            onClick={() => setAdminFilter("a+")}
-          >
+          <Button variant={adminFilter === "a+" ? "default" : "outline"} onClick={() => setAdminFilter("a+")}>
             <Cpu className="mr-2 h-4 w-4" />
             A+
           </Button>
-          <Button
-            variant={adminFilter === "hidden" ? "default" : "outline"}
-            onClick={() => setAdminFilter("hidden")}
-          >
+          <Button variant={adminFilter === "hidden" ? "default" : "outline"} onClick={() => setAdminFilter("hidden")}>
             Hidden
           </Button>
         </div>
@@ -504,180 +510,168 @@ function QuizzesPageInner() {
         </Grid>
       ) : roleIsAdmin ? (
         <DragDropContext onDragEnd={onDragEnd}>
-          <Droppable droppableId="quiz-grid" direction="vertical">
-            {(provided) => (
-              <div
-                ref={provided.innerRef}
-                {...provided.droppableProps}
-                className="grid gap-6 md:grid-cols-2 xl:grid-cols-3"
-              >
-                {sortQuizzes(adminQuizzes).map((quiz, index) => {
-                  const averageScore = averageScores[quiz.id];
-                  const isActionLoading = (action: string) =>
-                    loadingAction === `${action}-${quiz.id}`;
+          {(() => {
+            const grouped = groupByCourseTag(adminQuizzes);
+            return (
+              <div className="space-y-2">
+                {SECTION_ORDER.map((tag) => {
+                  const list = grouped[tag];
+                  if (list.length === 0) return null;
+
                   return (
-                    <Draggable
-                      key={quiz.id}
-                      draggableId={quiz.id}
-                      index={index}
-                      isDragDisabled={savingOrder}
-                    >
-                      {(drag) => (
-                        <Card
-                          ref={drag.innerRef}
-                          {...drag.draggableProps}
-                          className="flex flex-col"
-                        >
-                          <CardHeader>
-                            <div className="flex items-start justify-between gap-2">
-                              <CardTitle className="flex items-center gap-2">
-                                {quiz.title}
-                                {(quiz as any).course &&
-                                  (quiz as any).course !== "unassigned" && (
-                                    <Badge variant="outline">
-                                      {String((quiz as any).course).toUpperCase()}
-                                    </Badge>
-                                  )}
-                                {isArchived(quiz) && (
-                                  <Badge variant={getBadgeVariant("Archived")}>
-                                    Archived
-                                  </Badge>
-                                )}
-                                {isHidden(quiz) && (
-                                  <Badge variant="destructive">Hidden</Badge>
-                                )}
-                              </CardTitle>
-
-                              {/* Actions (drag + menu) */}
-                              <div className="flex items-center gap-1">
-                                <button
-                                  {...drag.dragHandleProps}
-                                  className="inline-flex items-center justify-center rounded-md p-1 text-muted-foreground hover:text-foreground hover:bg-muted/50 transition"
-                                  aria-label="Drag to reorder"
-                                  title="Drag to reorder"
-                                  disabled={savingOrder}
+                    <div key={tag} className="w-full">
+                      <SectionDivider label={tag.toUpperCase()} />
+                      <Droppable droppableId={tag} direction="vertical">
+                        {(provided) => (
+                          <div
+                            ref={provided.innerRef}
+                            {...provided.droppableProps}
+                            className="grid gap-6 md:grid-cols-2 xl:grid-cols-3"
+                          >
+                            {list.map((quiz, index) => {
+                              const averageScore = averageScores[quiz.id];
+                              const isActionLoading = (action: string) => loadingAction === `${action}-${quiz.id}`;
+                              return (
+                                <Draggable
+                                  key={quiz.id}
+                                  draggableId={quiz.id}
+                                  index={index}
+                                  isDragDisabled={savingOrder}
                                 >
-                                  <GripVertical className="h-4 w-4" />
-                                </button>
+                                  {(drag) => (
+                                    <Card ref={drag.innerRef} {...drag.draggableProps} className="flex flex-col">
+                                      <CardHeader>
+                                        <div className="flex items-start justify-between gap-2">
+                                          <CardTitle className="flex items-center gap-2">
+                                            {quiz.title}
+                                            {(quiz as any).course && (quiz as any).course !== "unassigned" && (
+                                              <Badge variant="outline">{String((quiz as any).course).toUpperCase()}</Badge>
+                                            )}
+                                            {isArchived(quiz) && (
+                                              <Badge variant={getBadgeVariant("Archived")}>Archived</Badge>
+                                            )}
+                                            {isHidden(quiz) && <Badge variant="destructive">Hidden</Badge>}
+                                          </CardTitle>
 
-                                <DropdownMenu>
-                                  <DropdownMenuTrigger asChild>
-                                    <button
-                                      className="inline-flex items-center justify-center rounded-md p-1 text-muted-foreground hover:text-foreground hover:bg-muted/50 transition"
-                                      aria-label="More actions"
-                                      title="More actions"
-                                    >
-                                      {loadingAction?.endsWith(quiz.id) ? (
-                                        <Loader2 className="h-4 w-4 animate-spin" />
-                                      ) : (
-                                        <MoreVertical className="h-4 w-4" />
-                                      )}
-                                    </button>
-                                  </DropdownMenuTrigger>
-                                  <DropdownMenuContent align="end" side="bottom">
-                                    {isHidden(quiz) ? (
-                                      <>
-                                        <DropdownMenuItem
-                                          onClick={() => handleUnhide(quiz.id)}
-                                          className="cursor-pointer"
-                                        >
-                                          <Eye className="mr-2 h-4 w-4" />
-                                          Unhide
-                                        </DropdownMenuItem>
-                                        <DropdownMenuItem
+                                          {/* Actions (drag + menu) */}
+                                          <div className="flex items-center gap-1">
+                                            <button
+                                              {...drag.dragHandleProps}
+                                              className="inline-flex items-center justify-center rounded-md p-1 text-muted-foreground hover:text-foreground hover:bg-muted/50 transition"
+                                              aria-label="Drag to reorder"
+                                              title="Drag to reorder"
+                                              disabled={savingOrder}
+                                            >
+                                              <GripVertical className="h-4 w-4" />
+                                            </button>
+
+                                            <DropdownMenu>
+                                              <DropdownMenuTrigger asChild>
+                                                <button
+                                                  className="inline-flex items-center justify-center rounded-md p-1 text-muted-foreground hover:text-foreground hover:bg-muted/50 transition"
+                                                  aria-label="More actions"
+                                                  title="More actions"
+                                                >
+                                                  {loadingAction?.endsWith(quiz.id) ? (
+                                                    <Loader2 className="h-4 w-4 animate-spin" />
+                                                  ) : (
+                                                    <MoreVertical className="h-4 w-4" />
+                                                  )}
+                                                </button>
+                                              </DropdownMenuTrigger>
+                                              <DropdownMenuContent align="end" side="bottom">
+                                                {isHidden(quiz) ? (
+                                                  <>
+                                                    <DropdownMenuItem onClick={() => handleUnhide(quiz.id)} className="cursor-pointer">
+                                                      <Eye className="mr-2 h-4 w-4" />
+                                                      Unhide
+                                                    </DropdownMenuItem>
+                                                    <DropdownMenuItem
+                                                      onClick={() => {
+                                                        if (confirm("Delete this hidden quiz? This cannot be undone.")) {
+                                                          handleDelete(quiz.id);
+                                                        }
+                                                      }}
+                                                      className="cursor-pointer text-red-600 focus:text-red-700"
+                                                    >
+                                                      <Trash2 className="mr-2 h-4 w-4" />
+                                                      Delete
+                                                    </DropdownMenuItem>
+                                                  </>
+                                                ) : (
+                                                  <DropdownMenuItem onClick={() => handleHide(quiz.id)} className="cursor-pointer">
+                                                    <EyeOff className="mr-2 h-4 w-4" />
+                                                    Hide
+                                                  </DropdownMenuItem>
+                                                )}
+                                              </DropdownMenuContent>
+                                            </DropdownMenu>
+                                          </div>
+                                        </div>
+
+                                        <CardDescription>{quiz.description}</CardDescription>
+                                      </CardHeader>
+
+                                      <CardContent className="flex-grow">
+                                        <div className="flex justify-between text-sm text-muted-foreground">
+                                          <span>{quiz.questions.length} Questions</span>
+                                          {averageScore !== null && averageScore !== undefined ? (
+                                            <span className="flex items-center gap-1 font-semibold text-primary">
+                                              <Percent className="h-4 w-4" />
+                                              {averageScore}% Avg. Score
+                                            </span>
+                                          ) : (
+                                            <span className="flex items-center gap-1 text-sm text-muted-foreground">No attempts yet</span>
+                                          )}
+                                        </div>
+                                      </CardContent>
+
+                                      <CardFooter className="flex flex-col items-stretch gap-2">
+                                        <Button
                                           onClick={() => {
-                                            if (
-                                              confirm(
-                                                "Delete this hidden quiz? This cannot be undone.",
-                                              )
-                                            ) {
-                                              handleDelete(quiz.id);
-                                            }
+                                            setLoadingAction(`analytics-${quiz.id}`);
+                                            router.push(`/dashboard/quizzes/${quiz.id}/analytics`);
                                           }}
-                                          className="cursor-pointer text-red-600 focus:text-red-700"
+                                          variant="outline"
+                                          disabled={isActionLoading("analytics")}
                                         >
-                                          <Trash2 className="mr-2 h-4 w-4" />
-                                          Delete
-                                        </DropdownMenuItem>
-                                      </>
-                                    ) : (
-                                      <DropdownMenuItem
-                                        onClick={() => handleHide(quiz.id)}
-                                        className="cursor-pointer"
-                                      >
-                                        <EyeOff className="mr-2 h-4 w-4" />
-                                        Hide
-                                      </DropdownMenuItem>
-                                    )}
-                                  </DropdownMenuContent>
-                                </DropdownMenu>
-                              </div>
-                            </div>
-
-                            <CardDescription>{quiz.description}</CardDescription>
-                          </CardHeader>
-
-                          <CardContent className="flex-grow">
-                            <div className="flex justify-between text-sm text-muted-foreground">
-                              <span>{quiz.questions.length} Questions</span>
-                              {averageScore !== null &&
-                              averageScore !== undefined ? (
-                                <span className="flex items-center gap-1 font-semibold text-primary">
-                                  <Percent className="h-4 w-4" />
-                                  {averageScore}% Avg. Score
-                                </span>
-                              ) : (
-                                <span className="flex items-center gap-1 text-sm text-muted-foreground">
-                                  No attempts yet
-                                </span>
-                              )}
-                            </div>
-                          </CardContent>
-
-                          <CardFooter className="flex flex-col items-stretch gap-2">
-                            <Button
-                              onClick={() => {
-                                setLoadingAction(`analytics-${quiz.id}`);
-                                router.push(
-                                  `/dashboard/quizzes/${quiz.id}/analytics`,
-                                );
-                              }}
-                              variant="outline"
-                              disabled={isActionLoading("analytics")}
-                            >
-                              {isActionLoading("analytics") ? (
-                                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                              ) : (
-                                <BarChart className="mr-2 h-4 w-4" />
-                              )}
-                              View Analytics
-                            </Button>
-                            <Button
-                              onClick={() => {
-                                setLoadingAction(`edit-${quiz.id}`);
-                                router.push(
-                                  `/dashboard/quizzes/${quiz.id}/edit`,
-                                );
-                              }}
-                              disabled={isActionLoading("edit")}
-                            >
-                              {isActionLoading("edit") ? (
-                                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                              ) : (
-                                <Edit className="mr-2 h-4 w-4" />
-                              )}
-                              Edit Quiz
-                            </Button>
-                          </CardFooter>
-                        </Card>
-                      )}
-                    </Draggable>
+                                          {isActionLoading("analytics") ? (
+                                            <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                                          ) : (
+                                            <BarChart className="mr-2 h-4 w-4" />
+                                          )}
+                                          View Analytics
+                                        </Button>
+                                        <Button
+                                          onClick={() => {
+                                            setLoadingAction(`edit-${quiz.id}`);
+                                            router.push(`/dashboard/quizzes/${quiz.id}/edit`);
+                                          }}
+                                          disabled={isActionLoading("edit")}
+                                        >
+                                          {isActionLoading("edit") ? (
+                                            <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                                          ) : (
+                                            <Edit className="mr-2 h-4 w-4" />
+                                          )}
+                                          Edit Quiz
+                                        </Button>
+                                      </CardFooter>
+                                    </Card>
+                                  )}
+                                </Draggable>
+                              );
+                            })}
+                            {provided.placeholder}
+                          </div>
+                        )}
+                      </Droppable>
+                    </div>
                   );
                 })}
-                {provided.placeholder}
               </div>
-            )}
-          </Droppable>
+            );
+          })()}
         </DragDropContext>
       ) : showChooser ? null : studentQuizzes.length > 0 ? (
         <div className="grid gap-6 md:grid-cols-2 xl:grid-cols-3">
@@ -689,12 +683,9 @@ function QuizzesPageInner() {
                   <div className="flex items-center justify-between">
                     <CardTitle className="flex items-center gap-2">
                       {quiz.title}
-                      {(quiz as any).course &&
-                        (quiz as any).course !== "unassigned" && (
-                          <Badge variant="outline">
-                            {String((quiz as any).course).toUpperCase()}
-                          </Badge>
-                        )}
+                      {(quiz as any).course && (quiz as any).course !== "unassigned" && (
+                        <Badge variant="outline">{String((quiz as any).course).toUpperCase()}</Badge>
+                      )}
                     </CardTitle>
                     <StatusBadge quiz={quiz} />
                   </div>
