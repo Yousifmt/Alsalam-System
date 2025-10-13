@@ -135,6 +135,10 @@ function parsePastedBlock(rawText: string): ParsedResult | null {
 const DEFAULT_SCORING: ScoringConfig = { mode: "percent" };
 const DEFAULT_COURSE: CourseTag = "unassigned";
 
+/* === NEW: A+ Core tag (local-only type/state, no external changes) ========= */
+type APlusCoreTag = "core1" | "core2" | "unassigned";
+const DEFAULT_CORE: APlusCoreTag = "unassigned";
+
 function splitIntoBlocks(raw: string): string[] {
   const lines = raw.replace(/\r/g, "").split("\n").map((l) => l.trim());
 
@@ -237,6 +241,9 @@ export function QuizBuilderForm({ quiz }: { quiz?: Quiz }) {
   // NEW: course assignment (lazy init from quiz to preserve saved state)
   const [course, setCourse] = useState<CourseTag>(() => (quiz?.course ?? DEFAULT_COURSE));
 
+  // NEW: A+ core (lazy init; safe even if quiz has no 'core')
+  const [aPlusCore, setAPlusCore] = useState<APlusCoreTag>(() => (((quiz as any)?.core ?? DEFAULT_CORE) as APlusCoreTag));
+
   // Bulk-paste feedback
   const [lastImportCount, setLastImportCount] = useState<number | null>(null);
 
@@ -264,7 +271,13 @@ export function QuizBuilderForm({ quiz }: { quiz?: Quiz }) {
     setShuffleQuestions(quiz.shuffleQuestions);
     setShuffleAnswers(quiz.shuffleAnswers);
     // (Do not touch scoring/course here; they are initialized lazily above)
+    // aPlusCore already initialized lazily as well
   }, [quiz, isEditMode]);
+
+  // Reset A+ core to unassigned if course switched away from A+
+  useEffect(() => {
+    if (course !== "a+") setAPlusCore("unassigned");
+  }, [course]);
 
   // Paste a single full question block into a specific question textarea
   const applyParsedToSingleQuestion = (qId: number | string, raw: string): boolean => {
@@ -427,6 +440,9 @@ export function QuizBuilderForm({ quiz }: { quiz?: Quiz }) {
     return { normalized, skipped };
   };
 
+  // Extend payload type locally to allow 'core' without touching external Quiz type
+  type ExtendedQuizPayload = (Omit<Quiz, "id"> & { archived?: boolean }) & { core?: APlusCoreTag };
+
   const buildFinalPayload = async (status: Quiz["status"]) => {
     const finalQuestionsRaw: Question[] = await Promise.all(
       questions.map(async (q, index) => {
@@ -445,7 +461,7 @@ export function QuizBuilderForm({ quiz }: { quiz?: Quiz }) {
       })
     );
     const { normalized, skipped } = validateAndNormalize(finalQuestionsRaw);
-    const payload: Omit<Quiz, "id"> & { archived?: boolean } = {
+    const payload: ExtendedQuizPayload = {
       title: (title || "").trim() || "Untitled Quiz",
       description: (description || "").trim(),
       questions: normalized,
@@ -456,7 +472,8 @@ export function QuizBuilderForm({ quiz }: { quiz?: Quiz }) {
       shuffleAnswers,
       results: quiz?.results ?? [],
       scoring, // save the 100/900 choice
-      course,  // ← NEW
+      course,  // existing course
+      core: course === "a+" ? aPlusCore : undefined, // ← NEW
     };
     return { payload, skipped };
   };
@@ -478,7 +495,7 @@ export function QuizBuilderForm({ quiz }: { quiz?: Quiz }) {
       imageUrl: q.imageUrl && !q.imageUrl.startsWith("data:") ? q.imageUrl : null,
     }));
     const { normalized } = validateAndNormalize(draftQuestions);
-    const payload: Omit<Quiz, "id"> & { archived?: boolean } = {
+    const payload: ExtendedQuizPayload = {
       title: (title || "").trim() || "Untitled Quiz",
       description: (description || "").trim(),
       questions: normalized,
@@ -489,7 +506,8 @@ export function QuizBuilderForm({ quiz }: { quiz?: Quiz }) {
       shuffleAnswers,
       results: quiz?.results ?? [],
       scoring,
-      course, // ← NEW
+      course,
+      core: course === "a+" ? aPlusCore : undefined, // ← NEW
     };
     return payload;
   };
@@ -524,7 +542,7 @@ export function QuizBuilderForm({ quiz }: { quiz?: Quiz }) {
       autoSaveDraft();
     }, 1200);
     return () => clearTimeout(t);
-  }, [title, description, questions, timeLimit, shuffleQuestions, shuffleAnswers, scoring, course]); // eslint-disable-line
+  }, [title, description, questions, timeLimit, shuffleQuestions, shuffleAnswers, scoring, course, aPlusCore]); // ← added aPlusCore
 
   /* --------------------------------- Save / Archive ---------------------------------- */
 
@@ -677,6 +695,24 @@ export function QuizBuilderForm({ quiz }: { quiz?: Quiz }) {
             </Select>
             <p className="text-xs text-muted-foreground">Pick which course this quiz belongs to.</p>
           </div>
+
+          {/* NEW: A+ Core picker (visible only when course === 'a+') */}
+          {course === "a+" && (
+            <div className="space-y-2">
+              <Label htmlFor="a-plus-core">A+ Core</Label>
+              <Select value={aPlusCore} onValueChange={(v) => setAPlusCore(v as APlusCoreTag)}>
+                <SelectTrigger id="a-plus-core">
+                  <SelectValue placeholder="Choose A+ core" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="core1">Core 1 (220-1201)</SelectItem>
+                  <SelectItem value="core2">Core 2 (220-1202)</SelectItem>
+                  <SelectItem value="unassigned">Unassigned</SelectItem>
+                </SelectContent>
+              </Select>
+              <p className="text-xs text-muted-foreground">Shown only for A+. Choose Core 1, Core 2, or leave unassigned.</p>
+            </div>
+          )}
         </div>
 
         <div className="grid gap-4 md:grid-cols-2">

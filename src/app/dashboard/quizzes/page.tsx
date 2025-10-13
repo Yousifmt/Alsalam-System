@@ -63,7 +63,7 @@ import {
   getQuizzes,
   getAllResultsForQuiz,
   saveQuizOrder,
-  updateQuizFields, // partial updater for { hidden }
+  updateQuizFields,
   deleteQuiz,
 } from "@/services/quiz-service";
 
@@ -94,6 +94,10 @@ const Draggable = dynamicImport(
 type CourseTag = "security+" | "a+" | "unassigned";
 type StudentCourseTag = "security+" | "a+";
 type AdminFilter = "all" | "security+" | "a+" | "hidden";
+
+// A+ core sub-tag (for quizzes whose course === "a+")
+type APlusCore = "core1" | "core2" | "unassigned";
+const CORE_ORDER: APlusCore[] = ["core1", "core2", "unassigned"];
 
 const SECTION_ORDER: CourseTag[] = ["security+", "a+", "unassigned"];
 
@@ -132,6 +136,11 @@ const isHidden = (q: any) => q?.hidden === true;
 
 function courseOf(q: Quiz): CourseTag {
   return ((q as any).course ?? "unassigned") as CourseTag;
+}
+
+// Core for A+ items (stored on quiz as "core": "core1" | "core2" | "unassigned")
+function coreOf(q: Quiz): APlusCore {
+  return ((q as any).core ?? "unassigned") as APlusCore;
 }
 
 /* ────────────────────────────────────────────────────────────────
@@ -229,6 +238,10 @@ function QuizzesPageInner() {
   // ADMIN: filter
   const [adminFilter, setAdminFilter] = useState<AdminFilter>("all");
 
+  // STUDENT (A+): core filter buttons
+  type StudentAPlusFilter = "all" | "core1" | "core2";
+  const [studentAPlusFilter, setStudentAPlusFilter] = useState<StudentAPlusFilter>("all");
+
   const roleReady = role === "admin" || role === "student";
 
   useEffect(() => {
@@ -281,7 +294,6 @@ function QuizzesPageInner() {
     if (adminFilter === "hidden") {
       return quizzes.filter((q) => isHidden(q));
     }
-    // For All / Security+ / A+, exclude hidden by default
     const base = quizzes.filter((q) => !isHidden(q));
     if (adminFilter === "all") return base;
     return base.filter((q) => courseOf(q) === (adminFilter as CourseTag));
@@ -292,7 +304,7 @@ function QuizzesPageInner() {
     return quizzes.filter((q) => {
       const c: CourseTag = courseOf(q);
       if (isArchived(q)) return false;
-      if (isHidden(q)) return false; // hide from students
+      if (isHidden(q)) return false;
       return c === "unassigned" || c === studentCourse;
     });
   }, [quizzes, studentCourse]);
@@ -316,46 +328,101 @@ function QuizzesPageInner() {
     for (const q of arr) {
       groups[courseOf(q)].push(q);
     }
-    // Keep each group stable by saved order/title
     for (const key of SECTION_ORDER) groups[key] = sortQuizzes(groups[key]);
     return groups;
   }
 
-  /* ── DnD (group-aware) ─────────────────────────────────────────────────── */
+  function groupAPlusByCore(arr: Quiz[]): Record<APlusCore, Quiz[]> {
+    const groups: Record<APlusCore, Quiz[]> = {
+      core1: [],
+      core2: [],
+      unassigned: [],
+    };
+    for (const q of arr) {
+      groups[coreOf(q)].push(q);
+    }
+    for (const key of CORE_ORDER) groups[key] = sortQuizzes(groups[key]);
+    return groups;
+  }
+
+  /* ── DnD (group-aware with A+ cores) ───────────────────────────────────── */
+
+  function buildAdminDroppableMap(list: Quiz[]): Record<string, Quiz[]> {
+  const byCourse = groupByCourseTag(list);
+  const map: Record<string, Quiz[]> = {};
+
+  // always keep course sections
+  map["security+"] = byCourse["security+"];
+
+  if (adminFilter === "a+") {
+    // ONLY split by cores when the admin filter is A+
+    const aplus = groupAPlusByCore(byCourse["a+"]);
+    map["a+::core1"] = aplus.core1;
+    map["a+::core2"] = aplus.core2;
+    map["a+::unassigned"] = aplus.unassigned;
+  } else {
+    // All / Hidden / Security+ -> show A+ as a single section
+    map["a+"] = byCourse["a+"];
+  }
+
+  map["unassigned"] = byCourse["unassigned"];
+  return map;
+}
+
+
+  function droppableOrderForAdmin(): string[] {
+  if (adminFilter === "a+") return ["a+::core1", "a+::core2", "a+::unassigned"];
+  if (adminFilter === "security+") return ["security+"];
+  if (adminFilter === "hidden") return ["security+", "a+", "unassigned"];
+  // "all" (default): show only course sections
+  return ["security+", "a+", "unassigned"];
+}
+
+
+  function labelForDroppable(id: string): string {
+    switch (id) {
+      case "security+":
+        return "SECURITY+";
+        case "a+":
+  return "A+";
+
+      case "a+::core1":
+        return "A+ — CORE 1";
+      case "a+::core2":
+        return "A+ — CORE 2";
+      case "a+::unassigned":
+        return "A+ — UNASSIGNED CORE";
+      case "unassigned":
+        return "UNASSIGNED COURSE";
+      default:
+        return id.toUpperCase();
+    }
+  }
 
   async function onDragEnd(result: DropResult) {
     if (!result.destination) return;
     const { source, destination } = result;
+    if (source.droppableId !== destination.droppableId) return;
 
-    // Restrict reordering to within the same section to avoid visual mismatch
-    if (source.droppableId !== destination.droppableId) {
-      return; // ignore cross-section drops
-    }
+    const map = buildAdminDroppableMap(adminQuizzes);
+    const srcId = source.droppableId;
 
-    // Work off the currently visible (filtered) admin list, grouped
-    const grouped = groupByCourseTag(adminQuizzes);
-    const tag = source.droppableId as CourseTag;
-
-    const list = [...grouped[tag]];
+    const list = [...(map[srcId] ?? [])];
     const [moved] = list.splice(source.index, 1);
     list.splice(destination.index, 0, moved);
-    grouped[tag] = list;
+    map[srcId] = list;
 
-    // Flatten in canonical section order -> new visible order
-    const visibleCombined = SECTION_ORDER.flatMap((t) => grouped[t]);
+    const order = droppableOrderForAdmin();
+    const visibleCombined = order.flatMap((id) => map[id] ?? []);
 
-    // Merge back with non-visible items, preserving their relative order
     const visibleIds = new Set(visibleCombined.map((q) => q.id));
     const others = quizzes.filter((q) => !visibleIds.has(q.id));
     const next = [...visibleCombined, ...others];
 
-    // Optimistic UI update
     setBeforeDnD(quizzes);
     setQuizzes(next);
 
-    // Persist with spaced numeric order values
     const pairs = next.map((q, i) => ({ id: q.id, order: (i + 1) * 1000 }));
-
     try {
       setSavingOrder(true);
       await saveQuizOrder(pairs);
@@ -425,7 +492,7 @@ function QuizzesPageInner() {
   async function handleHide(quizId: string) {
     try {
       setLoadingAction(`hide-${quizId}`);
-      await updateQuizFields(quizId, { hidden: true }); // partial
+      await updateQuizFields(quizId, { hidden: true });
     } finally {
       setQuizzes((prev) => prev.map((q) => (q.id === quizId ? ({ ...q, hidden: true } as Quiz) : q)));
       setLoadingAction(null);
@@ -435,7 +502,7 @@ function QuizzesPageInner() {
   async function handleUnhide(quizId: string) {
     try {
       setLoadingAction(`unhide-${quizId}`);
-      await updateQuizFields(quizId, { hidden: false }); // partial
+      await updateQuizFields(quizId, { hidden: false });
     } finally {
       setQuizzes((prev) => prev.map((q) => (q.id === quizId ? ({ ...q, hidden: false } as Quiz) : q)));
       setLoadingAction(null);
@@ -450,6 +517,218 @@ function QuizzesPageInner() {
       setQuizzes((prev) => prev.filter((q) => q.id !== quizId));
       setLoadingAction(null);
     }
+  }
+
+  /* ── Render Helpers ────────────────────────────────────────────────────── */
+
+  function AdminQuizCard({ quiz, average }: { quiz: Quiz; average: number | null | undefined }) {
+    const isActionLoading = (action: string) => loadingAction === `${action}-${quiz.id}`;
+    return (
+      <Card className="flex flex-col">
+        <CardHeader>
+          <div className="flex items-start justify-between gap-2">
+            <CardTitle className="flex items-center gap-2">
+  <span className="mr-2">{quiz.title}</span>
+
+  {/* badges group */}
+  <span className="inline-flex items-center gap-2 whitespace-nowrap">
+    {(quiz as any).course && (quiz as any).course !== "unassigned" && (
+      <Badge variant="outline" className="whitespace-nowrap">
+        {String((quiz as any).course).toUpperCase()}
+      </Badge>
+    )}
+    {courseOf(quiz) === "a+" && (
+      <Badge variant="outline" className="whitespace-nowrap">
+        {String(coreOf(quiz)).replace("core", "Core ").toUpperCase()}
+      </Badge>
+    )}
+    {isArchived(quiz) && (
+      <Badge variant={getBadgeVariant("Archived")} className="whitespace-nowrap">
+        Archived
+      </Badge>
+    )}
+    {isHidden(quiz) && (
+      <Badge variant="destructive" className="whitespace-nowrap">
+        Hidden
+      </Badge>
+    )}
+  </span>
+</CardTitle>
+
+
+            <div className="flex items-center gap-1">
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <button
+                    className="inline-flex items-center justify-center rounded-md p-1 text-muted-foreground hover:text-foreground hover:bg-muted/50 transition"
+                    aria-label="More actions"
+                    title="More actions"
+                  >
+                    {loadingAction?.endsWith(quiz.id) ? (
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                    ) : (
+                      <MoreVertical className="h-4 w-4" />
+                    )}
+                  </button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end" side="bottom">
+                  {isHidden(quiz) ? (
+                    <>
+                      <DropdownMenuItem onClick={() => handleUnhide(quiz.id)} className="cursor-pointer">
+                        <Eye className="mr-2 h-4 w-4" />
+                        Unhide
+                      </DropdownMenuItem>
+                      <DropdownMenuItem
+                        onClick={() => {
+                          if (confirm("Delete this hidden quiz? This cannot be undone.")) {
+                            handleDelete(quiz.id);
+                          }
+                        }}
+                        className="cursor-pointer text-red-600 focus:text-red-700"
+                      >
+                        <Trash2 className="mr-2 h-4 w-4" />
+                        Delete
+                      </DropdownMenuItem>
+                    </>
+                  ) : (
+                    <DropdownMenuItem onClick={() => handleHide(quiz.id)} className="cursor-pointer">
+                      <EyeOff className="mr-2 h-4 w-4" />
+                      Hide
+                    </DropdownMenuItem>
+                  )}
+                </DropdownMenuContent>
+              </DropdownMenu>
+            </div>
+          </div>
+
+          <CardDescription>{quiz.description}</CardDescription>
+        </CardHeader>
+
+        <CardContent className="flex-grow">
+          <div className="flex justify-between text-sm text-muted-foreground">
+            <span>{quiz.questions.length} Questions</span>
+            {average !== null && average !== undefined ? (
+              <span className="flex items-center gap-1 font-semibold text-primary">
+                <Percent className="h-4 w-4" />
+                {average}% Avg. Score
+              </span>
+            ) : (
+              <span className="flex items-center gap-1 text-sm text-muted-foreground">No attempts yet</span>
+            )}
+          </div>
+        </CardContent>
+
+        <CardFooter className="flex flex-col items-stretch gap-2">
+          <Button
+            onClick={() => {
+              setLoadingAction(`analytics-${quiz.id}`);
+              router.push(`/dashboard/quizzes/${quiz.id}/analytics`);
+            }}
+            variant="outline"
+            disabled={isActionLoading("analytics")}
+          >
+            {isActionLoading("analytics") ? (
+              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+            ) : (
+              <BarChart className="mr-2 h-4 w-4" />
+            )}
+            View Analytics
+          </Button>
+          <Button
+            onClick={() => {
+              setLoadingAction(`edit-${quiz.id}`);
+              router.push(`/dashboard/quizzes/${quiz.id}/edit`);
+            }}
+            disabled={isActionLoading("edit")}
+          >
+            {isActionLoading("edit") ? (
+              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+            ) : (
+              <Edit className="mr-2 h-4 w-4" />
+            )}
+            Edit Quiz
+          </Button>
+        </CardFooter>
+      </Card>
+    );
+  }
+
+  function StudentQuizCard({ quiz }: { quiz: Quiz }) {
+    const hasAttempts = quiz.results && quiz.results.length > 0;
+    return (
+      <Card className="flex flex-col">
+        <CardHeader>
+          <div className="flex items-center justify-between">
+            <CardTitle className="flex items-center gap-2">
+  <span className="mr-2">{quiz.title}</span>
+
+  {/* badges group */}
+  <span className="inline-flex items-center gap-2 whitespace-nowrap">
+    {(quiz as any).course && (quiz as any).course !== "unassigned" && (
+      <Badge variant="outline" className="whitespace-nowrap">
+        {String((quiz as any).course).toUpperCase()}
+      </Badge>
+    )}
+    {courseOf(quiz) === "a+" && (
+      <Badge variant="outline" className="whitespace-nowrap">
+        {String(coreOf(quiz)).replace("core", "Core ").toUpperCase()}
+      </Badge>
+    )}
+    {isArchived(quiz) && (
+      <Badge variant={getBadgeVariant("Archived")} className="whitespace-nowrap">
+        Archived
+      </Badge>
+    )}
+    {isHidden(quiz) && (
+      <Badge variant="destructive" className="whitespace-nowrap">
+        Hidden
+      </Badge>
+    )}
+  </span>
+</CardTitle>
+
+            <StatusBadge quiz={quiz} />
+          </div>
+          <CardDescription>{quiz.description}</CardDescription>
+        </CardHeader>
+        <CardContent className="flex-grow">
+          <div className="flex justify-between text-sm text-muted-foreground">
+            <span>{quiz.questions.length} Questions</span>
+            {hasAttempts ? (
+              <span className="flex items-center gap-1">
+                <History className="h-4 w-4" />
+                {quiz.results?.length} attempt{quiz.results?.length === 1 ? "" : "s"}
+              </span>
+            ) : null}
+          </div>
+        </CardContent>
+        <CardFooter className="flex flex-col items-stretch gap-2">
+          {hasAttempts ? (
+            <>
+              <Button asChild className="w-full" variant="outline">
+                <Link href={`/quiz/${quiz.id}/results`}>
+                  <BarChart className="mr-2 h-4 w-4" />
+                  View Results
+                </Link>
+              </Button>
+              <Button asChild className="w-full">
+                <Link href={`/quiz/${quiz.id}/start`}>
+                  Retake Quiz
+                  <ArrowRight className="ml-2 h-4 w-4" />
+                </Link>
+              </Button>
+            </>
+          ) : (
+            <Button asChild className="w-full">
+              <Link href={`/quiz/${quiz.id}/start`}>
+                Start Quiz
+                <ArrowRight className="ml-2 h-4 w-4" />
+              </Link>
+            </Button>
+          )}
+        </CardFooter>
+      </Card>
+    );
   }
 
   /* ── Render ────────────────────────────────────────────────────────────── */
@@ -511,157 +790,42 @@ function QuizzesPageInner() {
       ) : roleIsAdmin ? (
         <DragDropContext onDragEnd={onDragEnd}>
           {(() => {
-            const grouped = groupByCourseTag(adminQuizzes);
+            const map = buildAdminDroppableMap(adminQuizzes);
+            const order = droppableOrderForAdmin();
             return (
               <div className="space-y-2">
-                {SECTION_ORDER.map((tag) => {
-                  const list = grouped[tag];
+                {order.map((dropId) => {
+                  const list = map[dropId] ?? [];
                   if (list.length === 0) return null;
 
                   return (
-                    <div key={tag} className="w-full">
-                      <SectionDivider label={tag.toUpperCase()} />
-                      <Droppable droppableId={tag} direction="vertical">
+                    <div key={dropId} className="w-full">
+                      <SectionDivider label={labelForDroppable(dropId)} />
+                      <Droppable droppableId={dropId} direction="vertical">
                         {(provided) => (
                           <div
                             ref={provided.innerRef}
                             {...provided.droppableProps}
                             className="grid gap-6 md:grid-cols-2 xl:grid-cols-3"
                           >
-                            {list.map((quiz, index) => {
-                              const averageScore = averageScores[quiz.id];
-                              const isActionLoading = (action: string) => loadingAction === `${action}-${quiz.id}`;
-                              return (
-                                <Draggable
-                                  key={quiz.id}
-                                  draggableId={quiz.id}
-                                  index={index}
-                                  isDragDisabled={savingOrder}
-                                >
-                                  {(drag) => (
-                                    <Card ref={drag.innerRef} {...drag.draggableProps} className="flex flex-col">
-                                      <CardHeader>
-                                        <div className="flex items-start justify-between gap-2">
-                                          <CardTitle className="flex items-center gap-2">
-                                            {quiz.title}
-                                            {(quiz as any).course && (quiz as any).course !== "unassigned" && (
-                                              <Badge variant="outline">{String((quiz as any).course).toUpperCase()}</Badge>
-                                            )}
-                                            {isArchived(quiz) && (
-                                              <Badge variant={getBadgeVariant("Archived")}>Archived</Badge>
-                                            )}
-                                            {isHidden(quiz) && <Badge variant="destructive">Hidden</Badge>}
-                                          </CardTitle>
-
-                                          {/* Actions (drag + menu) */}
-                                          <div className="flex items-center gap-1">
-                                            <button
-                                              {...drag.dragHandleProps}
-                                              className="inline-flex items-center justify-center rounded-md p-1 text-muted-foreground hover:text-foreground hover:bg-muted/50 transition"
-                                              aria-label="Drag to reorder"
-                                              title="Drag to reorder"
-                                              disabled={savingOrder}
-                                            >
-                                              <GripVertical className="h-4 w-4" />
-                                            </button>
-
-                                            <DropdownMenu>
-                                              <DropdownMenuTrigger asChild>
-                                                <button
-                                                  className="inline-flex items-center justify-center rounded-md p-1 text-muted-foreground hover:text-foreground hover:bg-muted/50 transition"
-                                                  aria-label="More actions"
-                                                  title="More actions"
-                                                >
-                                                  {loadingAction?.endsWith(quiz.id) ? (
-                                                    <Loader2 className="h-4 w-4 animate-spin" />
-                                                  ) : (
-                                                    <MoreVertical className="h-4 w-4" />
-                                                  )}
-                                                </button>
-                                              </DropdownMenuTrigger>
-                                              <DropdownMenuContent align="end" side="bottom">
-                                                {isHidden(quiz) ? (
-                                                  <>
-                                                    <DropdownMenuItem onClick={() => handleUnhide(quiz.id)} className="cursor-pointer">
-                                                      <Eye className="mr-2 h-4 w-4" />
-                                                      Unhide
-                                                    </DropdownMenuItem>
-                                                    <DropdownMenuItem
-                                                      onClick={() => {
-                                                        if (confirm("Delete this hidden quiz? This cannot be undone.")) {
-                                                          handleDelete(quiz.id);
-                                                        }
-                                                      }}
-                                                      className="cursor-pointer text-red-600 focus:text-red-700"
-                                                    >
-                                                      <Trash2 className="mr-2 h-4 w-4" />
-                                                      Delete
-                                                    </DropdownMenuItem>
-                                                  </>
-                                                ) : (
-                                                  <DropdownMenuItem onClick={() => handleHide(quiz.id)} className="cursor-pointer">
-                                                    <EyeOff className="mr-2 h-4 w-4" />
-                                                    Hide
-                                                  </DropdownMenuItem>
-                                                )}
-                                              </DropdownMenuContent>
-                                            </DropdownMenu>
-                                          </div>
-                                        </div>
-
-                                        <CardDescription>{quiz.description}</CardDescription>
-                                      </CardHeader>
-
-                                      <CardContent className="flex-grow">
-                                        <div className="flex justify-between text-sm text-muted-foreground">
-                                          <span>{quiz.questions.length} Questions</span>
-                                          {averageScore !== null && averageScore !== undefined ? (
-                                            <span className="flex items-center gap-1 font-semibold text-primary">
-                                              <Percent className="h-4 w-4" />
-                                              {averageScore}% Avg. Score
-                                            </span>
-                                          ) : (
-                                            <span className="flex items-center gap-1 text-sm text-muted-foreground">No attempts yet</span>
-                                          )}
-                                        </div>
-                                      </CardContent>
-
-                                      <CardFooter className="flex flex-col items-stretch gap-2">
-                                        <Button
-                                          onClick={() => {
-                                            setLoadingAction(`analytics-${quiz.id}`);
-                                            router.push(`/dashboard/quizzes/${quiz.id}/analytics`);
-                                          }}
-                                          variant="outline"
-                                          disabled={isActionLoading("analytics")}
-                                        >
-                                          {isActionLoading("analytics") ? (
-                                            <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                                          ) : (
-                                            <BarChart className="mr-2 h-4 w-4" />
-                                          )}
-                                          View Analytics
-                                        </Button>
-                                        <Button
-                                          onClick={() => {
-                                            setLoadingAction(`edit-${quiz.id}`);
-                                            router.push(`/dashboard/quizzes/${quiz.id}/edit`);
-                                          }}
-                                          disabled={isActionLoading("edit")}
-                                        >
-                                          {isActionLoading("edit") ? (
-                                            <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                                          ) : (
-                                            <Edit className="mr-2 h-4 w-4" />
-                                          )}
-                                          Edit Quiz
-                                        </Button>
-                                      </CardFooter>
-                                    </Card>
-                                  )}
-                                </Draggable>
-                              );
-                            })}
+                            {list.map((quiz, index) => (
+                              <Draggable key={quiz.id} draggableId={quiz.id} index={index} isDragDisabled={savingOrder}>
+                                {(drag) => (
+                                  <div ref={drag.innerRef} {...drag.draggableProps} className="relative">
+                                    <button
+                                      {...drag.dragHandleProps}
+                                      className="absolute right-2 top-2 inline-flex items-center justify-center rounded-md p-1 text-muted-foreground hover:text-foreground hover:bg-muted/50 transition"
+                                      aria-label="Drag to reorder"
+                                      title="Drag to reorder"
+                                      disabled={savingOrder}
+                                    >
+                                      <GripVertical className="h-4 w-4" />
+                                    </button>
+                                    <AdminQuizCard quiz={quiz} average={averageScores[quiz.id]} />
+                                  </div>
+                                )}
+                              </Draggable>
+                            ))}
                             {provided.placeholder}
                           </div>
                         )}
@@ -674,64 +838,114 @@ function QuizzesPageInner() {
           })()}
         </DragDropContext>
       ) : showChooser ? null : studentQuizzes.length > 0 ? (
-        <div className="grid gap-6 md:grid-cols-2 xl:grid-cols-3">
-          {studentQuizzes.map((quiz) => {
-            const hasAttempts = quiz.results && quiz.results.length > 0;
+        (() => {
+          if (studentCourse === "a+") {
+            // Buttons like admin, but for A+ cores
+            const allAPlus = studentQuizzes.filter((q) => courseOf(q) === "a+");
+            const grouped = groupAPlusByCore(allAPlus);
+            const core1List = grouped.core1;
+            const core2List = grouped.core2;
+            const coreUnassigned = grouped.unassigned;
+
             return (
-              <Card key={quiz.id} className="flex flex-col">
-                <CardHeader>
-                  <div className="flex items-center justify-between">
-                    <CardTitle className="flex items-center gap-2">
-                      {quiz.title}
-                      {(quiz as any).course && (quiz as any).course !== "unassigned" && (
-                        <Badge variant="outline">{String((quiz as any).course).toUpperCase()}</Badge>
+              <div className="space-y-6">
+                {/* Student A+ filter buttons */}
+                <div className="flex flex-wrap items-center gap-2">
+                  <Button
+                    variant={studentAPlusFilter === "all" ? "default" : "outline"}
+                    onClick={() => setStudentAPlusFilter("all")}
+                  >
+                    All quizzes
+                  </Button>
+                  <Button
+                    variant={studentAPlusFilter === "core1" ? "default" : "outline"}
+                    onClick={() => setStudentAPlusFilter("core1")}
+                  >
+                    Core 1
+                  </Button>
+                  <Button
+                    variant={studentAPlusFilter === "core2" ? "default" : "outline"}
+                    onClick={() => setStudentAPlusFilter("core2")}
+                  >
+                    Core 2
+                  </Button>
+                </div>
+
+                {/* Panels */}
+                {studentAPlusFilter === "all" && (
+                  <div className="space-y-8">
+                    <SectionDivider label="A+ — ALL CORES" />
+                    {core1List.length > 0 && (
+                      <>
+                        <SectionDivider label="CORE 1" />
+                        <div className="grid gap-6 md:grid-cols-2 xl:grid-cols-3">
+                          {core1List.map((quiz) => (
+                            <StudentQuizCard key={quiz.id} quiz={quiz} />
+                          ))}
+                        </div>
+                      </>
+                    )}
+                    {core2List.length > 0 && (
+                      <>
+                        <SectionDivider label="CORE 2" />
+                        <div className="grid gap-6 md:grid-cols-2 xl:grid-cols-3">
+                          {core2List.map((quiz) => (
+                            <StudentQuizCard key={quiz.id} quiz={quiz} />
+                          ))}
+                        </div>
+                      </>
+                    )}
+                    {coreUnassigned.length > 0 && (
+                      <>
+                        <SectionDivider label="UNASSIGNED CORE" />
+                        <div className="grid gap-6 md:grid-cols-2 xl:grid-cols-3">
+                          {coreUnassigned.map((quiz) => (
+                            <StudentQuizCard key={quiz.id} quiz={quiz} />
+                          ))}
+                        </div>
+                      </>
+                    )}
+                  </div>
+                )}
+
+                {studentAPlusFilter === "core1" && (
+                  <div>
+                    <SectionDivider label="A+ — CORE 1" />
+                    <div className="grid gap-6 md:grid-cols-2 xl:grid-cols-3">
+                      {core1List.length ? core1List.map((q) => <StudentQuizCard key={q.id} quiz={q} />) : (
+                        <Card className="md:col-span-2 xl:col-span-3">
+                          <CardHeader><CardTitle>No Core 1 quizzes yet</CardTitle></CardHeader>
+                        </Card>
                       )}
-                    </CardTitle>
-                    <StatusBadge quiz={quiz} />
+                    </div>
                   </div>
-                  <CardDescription>{quiz.description}</CardDescription>
-                </CardHeader>
-                <CardContent className="flex-grow">
-                  <div className="flex justify-between text-sm text-muted-foreground">
-                    <span>{quiz.questions.length} Questions</span>
-                    {hasAttempts ? (
-                      <span className="flex items-center gap-1">
-                        <History className="h-4 w-4" />
-                        {quiz.results?.length} attempt
-                        {quiz.results?.length === 1 ? "" : "s"}
-                      </span>
-                    ) : null}
+                )}
+
+                {studentAPlusFilter === "core2" && (
+                  <div>
+                    <SectionDivider label="A+ — CORE 2" />
+                    <div className="grid gap-6 md:grid-cols-2 xl:grid-cols-3">
+                      {core2List.length ? core2List.map((q) => <StudentQuizCard key={q.id} quiz={q} />) : (
+                        <Card className="md:col-span-2 xl:col-span-3">
+                          <CardHeader><CardTitle>No Core 2 quizzes yet</CardTitle></CardHeader>
+                        </Card>
+                      )}
+                    </div>
                   </div>
-                </CardContent>
-                <CardFooter className="flex flex-col items-stretch gap-2">
-                  {hasAttempts ? (
-                    <>
-                      <Button asChild className="w-full" variant="outline">
-                        <Link href={`/quiz/${quiz.id}/results`}>
-                          <BarChart className="mr-2 h-4 w-4" />
-                          View Results
-                        </Link>
-                      </Button>
-                      <Button asChild className="w-full">
-                        <Link href={`/quiz/${quiz.id}/start`}>
-                          Retake Quiz
-                          <ArrowRight className="ml-2 h-4 w-4" />
-                        </Link>
-                      </Button>
-                    </>
-                  ) : (
-                    <Button asChild className="w-full">
-                      <Link href={`/quiz/${quiz.id}/start`}>
-                        Start Quiz
-                        <ArrowRight className="ml-2 h-4 w-4" />
-                      </Link>
-                    </Button>
-                  )}
-                </CardFooter>
-              </Card>
+                )}
+              </div>
             );
-          })}
-        </div>
+          }
+
+          // Non A+ student: default grid as before
+          return (
+            <div className="grid gap-6 md:grid-cols-2 xl:grid-cols-3">
+              {studentQuizzes.map((quiz) => (
+                <StudentQuizCard key={quiz.id} quiz={quiz} />
+              ))}
+            </div>
+          );
+        })()
       ) : (
         <Card>
           <CardHeader>
