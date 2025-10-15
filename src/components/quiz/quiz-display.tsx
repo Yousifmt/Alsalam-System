@@ -1,10 +1,11 @@
+// src/components/quiz/quiz-display.tsx
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import type { Quiz, QuizResult, QuizSession } from "@/lib/types";
+import type { Quiz, QuizSession } from "@/lib/types";
 import { QuizInterface } from "@/components/quiz/quiz-interface";
-import { Clock, Loader2, Beaker } from "lucide-react";
+import { Clock, Loader2, Beaker, ShieldAlert, MonitorUp } from "lucide-react";
 import Link from "next/link";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -41,6 +42,128 @@ export function QuizDisplay({ quiz: initialQuiz, isPractice }: { quiz: Quiz; isP
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const DEBOUNCE_MS = 500;
 
+  /** ================================
+   * Anti-cheat (Normal mode only)
+   * ================================ */
+  const antiCheatActive = !isPractice && role !== "admin";
+
+  // Fullscreen + locks
+  const [isFullscreen, setIsFullscreen] = useState<boolean>(false);
+  const [lockedUntil, setLockedUntil] = useState<number | null>(null);
+  const [nowTs, setNowTs] = useState<number>(Date.now());
+  const LOCK_SECONDS = 10;
+
+  // 🚩 جديد: إيقاف الحمايات مؤقتًا أثناء التحميل/الخروج/الإنهاء
+  const [suppressGuards, setSuppressGuards] = useState<boolean>(false);
+  const antiCheatLive = antiCheatActive && !suppressGuards;
+
+  const isTimedLock = lockedUntil !== null && lockedUntil > nowTs;
+  const remainingLock = isTimedLock ? Math.max(0, Math.ceil((lockedUntil - nowTs) / 1000)) : 0;
+
+  const requestFullscreen = async () => {
+    try {
+      await document.documentElement.requestFullscreen();
+    } catch {}
+  };
+  const exitFullscreen = async () => {
+    try {
+      if (document.fullscreenElement) {
+        await document.exitFullscreen();
+      }
+    } catch {}
+  };
+
+  // قفل بلا مدة: يظهر فقط عند الخروج من Fullscreen
+  const lockIndefinitely = () => {
+    if (!antiCheatLive) return; // لو مطفّي الحمايات لا نقفل
+    setLockedUntil(null);
+    if (user && quiz) {
+      saveQuizProgress(quiz.id, user.uid, latestAnswersRef.current, latestIndexRef.current).catch(() => {});
+    }
+  };
+  // قفل 10 ثوانٍ: عند تبديل التبويب/تصغير النافذة
+  const lockForTenSeconds = () => {
+    if (!antiCheatLive) return; // لو مطفّي الحمايات لا نقفل
+    setLockedUntil(Date.now() + LOCK_SECONDS * 1000);
+    if (user && quiz) {
+      saveQuizProgress(quiz.id, user.uid, latestAnswersRef.current, latestIndexRef.current).catch(() => {});
+    }
+  };
+
+  // الدخول إلى الامتحان: حاول Fullscreen أوتوماتيكياً + fallback بأول نقرة
+  useEffect(() => {
+    if (!antiCheatActive) return;
+    requestFullscreen();
+  }, [antiCheatActive]);
+  useEffect(() => {
+    if (!antiCheatActive) return;
+    const onFirstPointer = async () => {
+      if (!document.fullscreenElement) await requestFullscreen();
+      window.removeEventListener("pointerdown", onFirstPointer, true);
+    };
+    window.addEventListener("pointerdown", onFirstPointer, true);
+    return () => window.removeEventListener("pointerdown", onFirstPointer, true);
+  }, [antiCheatActive]);
+
+  // راقب الخروج من Fullscreen ⇒ قفل غير محدود (إلا إذا كنا موقّفين الحمايات)
+  useEffect(() => {
+    if (!antiCheatActive) return;
+    const onFsChange = () => {
+      const fs = !!document.fullscreenElement;
+      setIsFullscreen(fs);
+      if (!fs) lockIndefinitely();
+    };
+    document.addEventListener("fullscreenchange", onFsChange);
+    return () => document.removeEventListener("fullscreenchange", onFsChange);
+  }, [antiCheatActive, antiCheatLive]); // antiCheatLive للتأكد من احترام الإيقاف المؤقت
+
+  // تبديل تبويب/تصغير نافذة ⇒ قفل 10 ثواني (إلا إذا كنا موقّفين الحمايات)
+  useEffect(() => {
+    if (!antiCheatActive) return;
+    const onVisibility = () => {
+      if (document.hidden) lockForTenSeconds();
+    };
+    const onBlur = () => {
+      lockForTenSeconds();
+    };
+    const onBeforeUnload = (e: BeforeUnloadEvent) => {
+      e.preventDefault();
+      e.returnValue = "";
+    };
+    document.addEventListener("visibilitychange", onVisibility);
+    window.addEventListener("blur", onBlur);
+    window.addEventListener("beforeunload", onBeforeUnload);
+    return () => {
+      document.removeEventListener("visibilitychange", onVisibility);
+      window.removeEventListener("blur", onBlur);
+      window.removeEventListener("beforeunload", onBeforeUnload);
+    };
+  }, [antiCheatActive, antiCheatLive]);
+
+  // تحديث مؤقت القفل
+  useEffect(() => {
+    if (!antiCheatActive) return;
+    const id = setInterval(() => setNowTs(Date.now()), 300);
+    return () => clearInterval(id);
+  }, [antiCheatActive]);
+
+  // منع التظليل + الرايت كلك + النسخ/القص/اللصق (بدون اعتراض اختصارات)
+  useEffect(() => {
+    if (!antiCheatActive) return;
+    const stop = (e: Event) => e.preventDefault();
+    document.addEventListener("contextmenu", stop);
+    document.addEventListener("copy", stop as EventListener);
+    document.addEventListener("cut", stop as EventListener);
+    document.addEventListener("paste", stop as EventListener);
+    return () => {
+      document.removeEventListener("contextmenu", stop);
+      document.removeEventListener("copy", stop as EventListener);
+      document.removeEventListener("cut", stop as EventListener);
+      document.removeEventListener("paste", stop as EventListener);
+    };
+  }, [antiCheatActive]);
+
+  // ====== تحميل بيانات الكويز ======
   useEffect(() => {
     if (!user) return;
 
@@ -61,7 +184,6 @@ export function QuizDisplay({ quiz: initialQuiz, isPractice }: { quiz: Quiz; isP
         const allIds = quizData.questions.map(q => q.id);
 
         if (quizData.timeLimit && !isPractice && role !== "admin") {
-          // Resume or create; if previous was submitted, this overwrites with a NEW attempt
           const session: QuizSession = await startOrResumeActiveSession(
             quizData.id,
             user.uid,
@@ -82,7 +204,6 @@ export function QuizDisplay({ quiz: initialQuiz, isPractice }: { quiz: Quiz; isP
           setInitialTimeLeft(remaining);
           setTimeLeft(remaining);
         } else {
-          // Practice/Admin: fresh or none
           const fresh = quizData.timeLimit ? quizData.timeLimit * 60 : null;
           setInitialTimeLeft(fresh);
           setTimeLeft(fresh);
@@ -107,7 +228,7 @@ export function QuizDisplay({ quiz: initialQuiz, isPractice }: { quiz: Quiz; isP
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [initialQuiz.id, user, role, isPractice]);
 
-  // UI helpers
+  // ====== Helpers ======
   const formatTime = (sec: number) => {
     const m = Math.floor(sec / 60);
     const s = sec % 60;
@@ -125,9 +246,7 @@ export function QuizDisplay({ quiz: initialQuiz, isPractice }: { quiz: Quiz; isP
   const queueSave = (answersByQuestionId: Record<string, string | string[]>, currentIndex: number) => {
     latestAnswersRef.current = answersByQuestionId;
     latestIndexRef.current = currentIndex;
-
     if (isPractice || role === "admin" || !user || !quiz) return;
-
     pendingRef.current = { answersByQuestionId, currentIndex };
     if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
     saveTimerRef.current = setTimeout(async () => {
@@ -148,7 +267,14 @@ export function QuizDisplay({ quiz: initialQuiz, isPractice }: { quiz: Quiz; isP
     };
   }, []);
 
-  // Loading state
+  // Submit/Exit: أخرج من Fullscreen ثم عطّل الحمايات حتى الاكتمال
+  const finalizeWithNoGuards = async (fn: () => Promise<void>) => {
+    setSuppressGuards(true);      // 🔕 أوقف الحمايات
+    await exitFullscreen();       // اخرج من الفول سكرين (لن يسبب قفل الآن)
+    await fn();                   // نفّذ العملية (submit/route)
+  };
+
+  // ====== UI ======
   if (loading) {
     return (
       <div className="flex min-h-screen items-center justify-center">
@@ -176,9 +302,8 @@ export function QuizDisplay({ quiz: initialQuiz, isPractice }: { quiz: Quiz; isP
     );
   }
 
-  // Active attempt
   return (
-    <div className="flex min-h-screen flex-col bg-secondary">
+    <div className={cn("flex min-h-screen flex-col bg-secondary", antiCheatActive && "select-none")}>
       <header className="sticky top-0 z-10 flex h-20 flex-col justify-center border-b bg-background px-4 md:px-6">
         <div className="flex items-center justify-between">
           <h1 className="text-xl font-bold font-headline text-primary">{quiz.title}</h1>
@@ -196,7 +321,17 @@ export function QuizDisplay({ quiz: initialQuiz, isPractice }: { quiz: Quiz; isP
               </div>
             )}
             <Button asChild variant="outline">
-              <Link href="/dashboard">Exit Quiz</Link>
+              <Link
+                href="/dashboard"
+                onClick={async (e) => {
+                  e.preventDefault();
+                  await finalizeWithNoGuards(async () => {
+                    router.push("/dashboard");
+                  });
+                }}
+              >
+                Exit Quiz
+              </Link>
             </Button>
           </div>
         </div>
@@ -209,7 +344,7 @@ export function QuizDisplay({ quiz: initialQuiz, isPractice }: { quiz: Quiz; isP
         )}
       </header>
 
-      <main className="flex flex-1 items-center justify-center p-4">
+      <main className={cn("flex flex-1 items-center justify-center p-4", antiCheatLive && isTimedLock && "pointer-events-none blur-sm")}>
         <QuizInterface
           quizData={quiz}
           isPractice={isPractice}
@@ -221,12 +356,61 @@ export function QuizDisplay({ quiz: initialQuiz, isPractice }: { quiz: Quiz; isP
           onAnswerChange={queueSave}
           onSubmitFinalize={async (result) => {
             if (!user) return;
-            await submitQuizResult(quiz.id, user.uid, result);
-            if (!isPractice) await finalizeQuizAttempt(quiz.id, user.uid);
-            router.replace(`/quiz/${quiz.id}/results?practice=${isPractice}`);
+            await finalizeWithNoGuards(async () => {
+              await submitQuizResult(quiz.id, user.uid, result);
+              if (!isPractice) await finalizeQuizAttempt(quiz.id, user.uid);
+              router.replace(`/quiz/${quiz.id}/results?practice=${isPractice}`);
+            });
           }}
         />
       </main>
+
+      {/* أوفرلاي: قفل غير محدود (عند الخروج من Fullscreen) */}
+      {antiCheatLive && !isFullscreen && !isTimedLock && (
+        <div className="fixed inset-0 z-30 bg-background/90 backdrop-blur-sm flex items-center justify-center p-4">
+          <Card className="max-w-md w-full">
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                <MonitorUp className="h-5 w-5" />
+                Focus mode required
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              <p className="text-sm text-muted-foreground">
+                The exam is paused because you left <span className="font-semibold">Full Screen</span>. Please return to continue.
+              </p>
+              <Button onClick={requestFullscreen} className="w-full">Back to full screen mode</Button>
+            </CardContent>
+          </Card>
+        </div>
+      )}
+
+      {/* أوفرلاي: قفل زمني 10 ثواني (tab/window switch) */}
+      {antiCheatLive && isTimedLock && (
+        <div className="fixed inset-0 z-30 bg-background/90 backdrop-blur-sm flex items-center justify-center p-4">
+          <Card className="max-w-md w-full shadow-2xl">
+            <CardHeader className="space-y-1">
+              <div className="flex items-center gap-2">
+                <ShieldAlert className="h-5 w-5 text-destructive" />
+                <CardTitle>Exam locked</CardTitle>
+              </div>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              <p className="text-sm text-muted-foreground">
+                You left the exam (tab/window switch). The exam is locked for{" "}
+                <span className="font-semibold">{remainingLock}s</span>.
+              </p>
+              <Button
+                disabled={remainingLock > 0}
+                onClick={requestFullscreen}
+                className="w-full"
+              >
+                {remainingLock > 0 ? `Please wait ${remainingLock}s` : "Back to full screen mode"}
+              </Button>
+            </CardContent>
+          </Card>
+        </div>
+      )}
     </div>
   );
 }
