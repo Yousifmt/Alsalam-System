@@ -408,36 +408,31 @@ export function QuizDisplay({ quiz: initialQuiz, isPractice }: { quiz: Quiz; isP
 
       {/* Overlay: 15s lock (tab/window switch) — all devices */}
       {antiCheatLive && isTimedLock && (
-        <div className="fixed inset-0 z-30 bg-background/90 backdrop-blur-sm flex items-center justify-center p-4">
-          <Card className="max-w-md w-full shadow-2xl">
-            <CardHeader className="space-y-1">
-              <div className="flex items-center gap-2">
-                <ShieldAlert className="h-5 w-5 text-destructive" />
-                <CardTitle>Exam locked for {remainingLock}s</CardTitle>
-              </div>
-            </CardHeader>
-            <CardContent className="space-y-3">
-              <div className="space-y-1 text-sm text-muted-foreground">
-                <p>
-                  You switched tabs/windows or minimized the exam. Please wait until the timer ends, then return to
-                  <span className="font-semibold"> Full Screen</span> (desktop only).
-                </p>
-                <p dir="rtl">
-                  قمت بتبديل التبويب/النافذة أو تصغير صفحة الامتحان. الرجاء الانتظار حتى نهاية العداد ثم العودة إلى
-                  <span className="font-semibold"> وضع ملء الشاشة</span> .
-                </p>
-              </div>
-              <Button
-                disabled={remainingLock > 0}
-                onClick={requestFullscreen}
-                className="w-full"
-              >
-                {remainingLock > 0 ? `Please wait ${remainingLock}s` : "Back to full screen mode"}
-              </Button>
-            </CardContent>
-          </Card>
+  <div className="fixed inset-0 z-30 bg-background/90 backdrop-blur-sm flex items-center justify-center p-4">
+    <Card className="max-w-md w-full shadow-2xl">
+      <CardHeader className="space-y-1">
+        <div className="flex items-center gap-2">
+          <ShieldAlert className="h-5 w-5 text-destructive" />
+          <CardTitle>Exam locked for {remainingLock}s</CardTitle>
         </div>
-      )}
+      </CardHeader>
+      <CardContent className="space-y-3">
+        <div className="space-y-2 text-sm text-muted-foreground">
+          <p>
+            You switched tabs/windows or minimized the exam. Please wait until the timer ends.
+          </p>
+          <p dir="rtl">
+            قمت بتبديل التبويب/النافذة أو تصغير صفحة الامتحان. الرجاء الانتظار حتى نهاية العداد.
+          </p>
+          <p className="text-center font-medium">
+            {remainingLock}s
+          </p>
+        </div>
+        {/* No button here by request */}
+      </CardContent>
+    </Card>
+  </div>
+)}
     </div>
   );
 }
