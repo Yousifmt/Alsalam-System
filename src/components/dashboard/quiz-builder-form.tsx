@@ -456,25 +456,29 @@ export function QuizBuilderForm({ quiz }: { quiz?: Quiz }) {
           type: q.type,
           options: q.options,
           answer: q.answer,
-          imageUrl: finalImageUrl,
+          imageUrl: finalImageUrl, // null is fine for Firestore
         };
       })
     );
+
     const { normalized, skipped } = validateAndNormalize(finalQuestionsRaw);
+
+    // Build without undefineds (use conditional spreads)
     const payload: ExtendedQuizPayload = {
       title: (title || "").trim() || "Untitled Quiz",
       description: (description || "").trim(),
       questions: normalized,
       status,
       archived: status === "Archived",
-      timeLimit: timeLimit > 0 ? timeLimit : undefined,
       shuffleQuestions,
       shuffleAnswers,
       results: quiz?.results ?? [],
-      scoring, // save the 100/900 choice
-      course,  // existing course
-      core: course === "a+" ? aPlusCore : undefined, // ← NEW
+      scoring,
+      course,
+      ...(timeLimit > 0 ? { timeLimit } : {}), // omit if 0/falsey
+      ...(course === "a+" ? { core: aPlusCore } : {}), // include ONLY for A+
     };
+
     return { payload, skipped };
   };
 
@@ -1001,55 +1005,54 @@ export function QuizBuilderForm({ quiz }: { quiz?: Quiz }) {
       {/* Actions */}
       <div className="flex flex-col gap-2 sm:flex-row sm:justify-between">
         <div className="flex gap-2 w-full sm:w-auto">
-          {(isEditMode || draftId) && (
-            <AlertDialog>
-              <AlertDialogTrigger asChild>
-                <Button type="button" variant="destructive" className="flex-1" disabled={isSaving || isDeleting || isArchiving}>
-                  <Trash2 className="mr-2 h-4 w-4" />
-                  Delete
-                </Button>
-              </AlertDialogTrigger>
-              <AlertDialogContent>
-                <AlertDialogHeader>
-                  <AlertDialogTitle>Are you absolutely sure?</AlertDialogTitle>
-                  <AlertDialogDescription>
-                    This action cannot be undone. This will permanently delete the quiz and all associated student results.
-                  </AlertDialogDescription>
-                </AlertDialogHeader>
-                <AlertDialogFooter>
-                  <AlertDialogCancel>Cancel</AlertDialogCancel>
-                  <AlertDialogAction
-                    onClick={async () => {
-                      if (!quiz && !draftId) return;
-                      try {
-                        const id = isEditMode ? quiz!.id : draftId!;
-                        await deleteQuiz(id);
-                        router.push("/dashboard/quizzes");
-                        router.refresh();
-                      } catch {
-                        // ignore
-                      }
-                    }}
-                  >
-                    Continue
-                  </AlertDialogAction>
-                </AlertDialogFooter>
-              </AlertDialogContent>
-            </AlertDialog>
-          )}
+          {/* ALWAYS SHOW DELETE */}
+          <AlertDialog>
+            <AlertDialogTrigger asChild>
+              <Button type="button" variant="destructive" className="flex-1" disabled={isSaving || isDeleting || isArchiving}>
+                <Trash2 className="mr-2 h-4 w-4" />
+                Delete
+              </Button>
+            </AlertDialogTrigger>
+            <AlertDialogContent>
+              <AlertDialogHeader>
+                <AlertDialogTitle>Are you absolutely sure?</AlertDialogTitle>
+                <AlertDialogDescription>
+                  This action cannot be undone. This will permanently delete the quiz and all associated student results.
+                </AlertDialogDescription>
+              </AlertDialogHeader>
+              <AlertDialogFooter>
+                <AlertDialogCancel>Cancel</AlertDialogCancel>
+                <AlertDialogAction
+                  onClick={async () => {
+                    if (!quiz && !draftId) return;
+                    try {
+                      const id = isEditMode ? quiz!.id : draftId!;
+                      await deleteQuiz(id);
+                      router.push("/dashboard/quizzes");
+                      router.refresh();
+                    } catch {
+                      // ignore
+                    }
+                  }}
+                >
+                  Continue
+                </AlertDialogAction>
+              </AlertDialogFooter>
+            </AlertDialogContent>
+          </AlertDialog>
 
-          {(isEditMode || draftId) &&
-            ((isArchived && (
-              <Button type="button" variant="outline" className="flex-1" disabled={isSaving || isDeleting || isArchiving} onClick={handleUnarchive}>
-                {isArchiving ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <ArchiveRestore className="mr-2 h-4 w-4" />}
-                Unarchive
-              </Button>
-            )) || (
-              <Button type="button" variant="secondary" className="flex-1" disabled={isSaving || isDeleting || isArchiving} onClick={handleArchive}>
-                {isArchiving ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Archive className="mr-2 h-4 w-4" />}
-                Archive
-              </Button>
-            ))}
+          {/* ALWAYS SHOW ARCHIVE/UNARCHIVE */}
+          {isArchived ? (
+            <Button type="button" variant="outline" className="flex-1" disabled={isSaving || isDeleting || isArchiving} onClick={handleUnarchive}>
+              {isArchiving ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <ArchiveRestore className="mr-2 h-4 w-4" />}
+              Unarchive
+            </Button>
+          ) : (
+            <Button type="button" variant="secondary" className="flex-1" disabled={isSaving || isDeleting || isArchiving} onClick={handleArchive}>
+              {isArchiving ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Archive className="mr-2 h-4 w-4" />}
+              Archive
+            </Button>
+          )}
         </div>
 
         <Button type="submit" className="flex-1 sm:flex-initial" disabled={isSaving || isDeleting || isArchiving}>

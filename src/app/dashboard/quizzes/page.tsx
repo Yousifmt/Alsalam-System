@@ -26,15 +26,6 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
-import {
-  Dialog,
-  DialogContent,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
 import { Skeleton } from "@/components/ui/skeleton";
 
 import {
@@ -73,6 +64,12 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+
+// ✅ NEW: robust normalization/grouping helpers
+import {
+  groupByCourseTag as groupByCourseSafe,
+  normalizeQuizCourse,
+} from "@/utils/quizzes";
 
 /* DnD lazy imports */
 const DragDropContext = dynamicImport(
@@ -134,14 +131,11 @@ const isArchived = (q: any) => {
 };
 const isHidden = (q: any) => q?.hidden === true;
 
-function courseOf(q: Quiz): CourseTag {
-  return ((q as any).course ?? "unassigned") as CourseTag;
-}
-
-// Core for A+ items (stored on quiz as "core": "core1" | "core2" | "unassigned")
-function coreOf(q: Quiz): APlusCore {
-  return ((q as any).core ?? "unassigned") as APlusCore;
-}
+// after normalization, these are always safe
+const courseOf = (q: any): CourseTag =>
+  (q?.course as CourseTag) ?? "unassigned";
+const coreOf = (q: any): APlusCore =>
+  (q?.core as APlusCore) ?? "unassigned";
 
 /* ────────────────────────────────────────────────────────────────
    Skeletons & layout helpers
@@ -254,11 +248,14 @@ function QuizzesPageInner() {
       setLoading(true);
       try {
         const fetched = role === "admin" ? await getQuizzes() : await getQuizzesForUser(user.uid);
-        setQuizzes(fetched);
+
+        // ✅ normalize every quiz immediately to guarantee safe 'course' & 'core'
+        const normalized = (fetched ?? []).map(normalizeQuizCourse);
+        setQuizzes(normalized);
 
         if (role === "admin") {
           const scores: Record<string, number | null> = {};
-          for (const q of fetched) {
+          for (const q of normalized) {
             const results = await getAllResultsForQuiz(q.id);
             scores[q.id] = results.length
               ? Math.round(
@@ -291,6 +288,7 @@ function QuizzesPageInner() {
   /* ── Filters: Admin + Student ───────────────────────────────────────────── */
 
   const adminQuizzes = useMemo(() => {
+    // work from normalized source
     if (adminFilter === "hidden") {
       return quizzes.filter((q) => isHidden(q));
     }
@@ -316,31 +314,28 @@ function QuizzesPageInner() {
       const ao = typeof (a as any).order === "number" ? (a as any).order : 1e9;
       const bo = typeof (b as any).order === "number" ? (b as any).order : 1e9;
       if (ao !== bo) return ao - bo;
-      return a.title.localeCompare(b.title);
+      return (a.title || "").localeCompare(b.title || "");
     });
 
-  function groupByCourseTag(arr: Quiz[]): Record<CourseTag, Quiz[]> {
-    const groups: Record<CourseTag, Quiz[]> = {
-      "security+": [],
-      "a+": [],
-      "unassigned": [],
+  // ✅ use the safe grouping from utils (always-initialized buckets)
+  function groupByCourseTagSafe(arr: Quiz[]): Record<CourseTag, Quiz[]> {
+    const grouped = groupByCourseSafe(arr); // { unassigned, "security+", "a+" }
+    // ensure deterministic sort per bucket
+    return {
+      "security+": sortQuizzes(grouped["security+"]),
+      "a+": sortQuizzes(grouped["a+"]),
+      "unassigned": sortQuizzes(grouped["unassigned"]),
     };
-    for (const q of arr) {
-      groups[courseOf(q)].push(q);
-    }
-    for (const key of SECTION_ORDER) groups[key] = sortQuizzes(groups[key]);
-    return groups;
   }
 
   function groupAPlusByCore(arr: Quiz[]): Record<APlusCore, Quiz[]> {
+    // arr here should already be only A+ quizzes (normalized)
     const groups: Record<APlusCore, Quiz[]> = {
       core1: [],
       core2: [],
       unassigned: [],
     };
-    for (const q of arr) {
-      groups[coreOf(q)].push(q);
-    }
+    for (const q of arr) groups[coreOf(q)].push(q);
     for (const key of CORE_ORDER) groups[key] = sortQuizzes(groups[key]);
     return groups;
   }
@@ -348,44 +343,41 @@ function QuizzesPageInner() {
   /* ── DnD (group-aware with A+ cores) ───────────────────────────────────── */
 
   function buildAdminDroppableMap(list: Quiz[]): Record<string, Quiz[]> {
-  const byCourse = groupByCourseTag(list);
-  const map: Record<string, Quiz[]> = {};
+    const byCourse = groupByCourseTagSafe(list); // safe buckets
+    const map: Record<string, Quiz[]> = {};
 
-  // always keep course sections
-  map["security+"] = byCourse["security+"];
+    // always keep course sections
+    map["security+"] = byCourse["security+"];
 
-  if (adminFilter === "a+") {
-    // ONLY split by cores when the admin filter is A+
-    const aplus = groupAPlusByCore(byCourse["a+"]);
-    map["a+::core1"] = aplus.core1;
-    map["a+::core2"] = aplus.core2;
-    map["a+::unassigned"] = aplus.unassigned;
-  } else {
-    // All / Hidden / Security+ -> show A+ as a single section
-    map["a+"] = byCourse["a+"];
+    if (adminFilter === "a+") {
+      // ONLY split by cores when the admin filter is A+
+      const aplus = groupAPlusByCore(byCourse["a+"]);
+      map["a+::core1"] = aplus.core1;
+      map["a+::core2"] = aplus.core2;
+      map["a+::unassigned"] = aplus.unassigned;
+    } else {
+      // All / Hidden / Security+ -> show A+ as a single section
+      map["a+"] = byCourse["a+"];
+    }
+
+    map["unassigned"] = byCourse["unassigned"];
+    return map;
   }
 
-  map["unassigned"] = byCourse["unassigned"];
-  return map;
-}
-
-
   function droppableOrderForAdmin(): string[] {
-  if (adminFilter === "a+") return ["a+::core1", "a+::core2", "a+::unassigned"];
-  if (adminFilter === "security+") return ["security+"];
-  if (adminFilter === "hidden") return ["security+", "a+", "unassigned"];
-  // "all" (default): show only course sections
-  return ["security+", "a+", "unassigned"];
-}
-
+    if (adminFilter === "a+") return ["a+::core1", "a+::core2", "a+::unassigned"];
+    if (adminFilter === "security+") return ["security+"];
+    if (adminFilter === "hidden") return ["security+", "a+", "unassigned"];
+    // "all" (default): show only course sections
+    return ["security+", "a+", "unassigned"];
+  }
 
   function labelForDroppable(id: string): string {
     switch (id) {
       case "security+":
         return "SECURITY+";
-        case "a+":
-  return "A+";
-
+      case "a+":
+        return "A+";
       case "a+::core1":
         return "A+ — CORE 1";
       case "a+::core2":
@@ -494,7 +486,9 @@ function QuizzesPageInner() {
       setLoadingAction(`hide-${quizId}`);
       await updateQuizFields(quizId, { hidden: true });
     } finally {
-      setQuizzes((prev) => prev.map((q) => (q.id === quizId ? ({ ...q, hidden: true } as Quiz) : q)));
+      setQuizzes((prev) =>
+        prev.map((q) => (q.id === quizId ? (normalizeQuizCourse({ ...q, hidden: true } as any) as any) : q)),
+      );
       setLoadingAction(null);
     }
   }
@@ -504,7 +498,9 @@ function QuizzesPageInner() {
       setLoadingAction(`unhide-${quizId}`);
       await updateQuizFields(quizId, { hidden: false });
     } finally {
-      setQuizzes((prev) => prev.map((q) => (q.id === quizId ? ({ ...q, hidden: false } as Quiz) : q)));
+      setQuizzes((prev) =>
+        prev.map((q) => (q.id === quizId ? (normalizeQuizCourse({ ...q, hidden: false } as any) as any) : q)),
+      );
       setLoadingAction(null);
     }
   }
@@ -528,33 +524,31 @@ function QuizzesPageInner() {
         <CardHeader>
           <div className="flex items-start justify-between gap-2">
             <CardTitle className="flex items-center gap-2">
-  <span className="mr-2">{quiz.title}</span>
-
-  {/* badges group */}
-  <span className="inline-flex items-center gap-2 whitespace-nowrap">
-    {(quiz as any).course && (quiz as any).course !== "unassigned" && (
-      <Badge variant="outline" className="whitespace-nowrap">
-        {String((quiz as any).course).toUpperCase()}
-      </Badge>
-    )}
-    {courseOf(quiz) === "a+" && (
-      <Badge variant="outline" className="whitespace-nowrap">
-        {String(coreOf(quiz)).replace("core", "Core ").toUpperCase()}
-      </Badge>
-    )}
-    {isArchived(quiz) && (
-      <Badge variant={getBadgeVariant("Archived")} className="whitespace-nowrap">
-        Archived
-      </Badge>
-    )}
-    {isHidden(quiz) && (
-      <Badge variant="destructive" className="whitespace-nowrap">
-        Hidden
-      </Badge>
-    )}
-  </span>
-</CardTitle>
-
+              <span className="mr-2">{quiz.title}</span>
+              {/* badges group */}
+              <span className="inline-flex items-center gap-2 whitespace-nowrap">
+                {(quiz as any).course && (quiz as any).course !== "unassigned" && (
+                  <Badge variant="outline" className="whitespace-nowrap">
+                    {String((quiz as any).course).toUpperCase()}
+                  </Badge>
+                )}
+                {courseOf(quiz) === "a+" && (
+                  <Badge variant="outline" className="whitespace-nowrap">
+                    {String(coreOf(quiz)).replace("core", "Core ").toUpperCase()}
+                  </Badge>
+                )}
+                {isArchived(quiz) && (
+                  <Badge variant={getBadgeVariant("Archived")} className="whitespace-nowrap">
+                    Archived
+                  </Badge>
+                )}
+                {isHidden(quiz) && (
+                  <Badge variant="destructive" className="whitespace-nowrap">
+                    Hidden
+                  </Badge>
+                )}
+              </span>
+            </CardTitle>
 
             <div className="flex items-center gap-1">
               <DropdownMenu>
@@ -660,32 +654,31 @@ function QuizzesPageInner() {
         <CardHeader>
           <div className="flex items-center justify-between">
             <CardTitle className="flex items-center gap-2">
-  <span className="mr-2">{quiz.title}</span>
-
-  {/* badges group */}
-  <span className="inline-flex items-center gap-2 whitespace-nowrap">
-    {(quiz as any).course && (quiz as any).course !== "unassigned" && (
-      <Badge variant="outline" className="whitespace-nowrap">
-        {String((quiz as any).course).toUpperCase()}
-      </Badge>
-    )}
-    {courseOf(quiz) === "a+" && (
-      <Badge variant="outline" className="whitespace-nowrap">
-        {String(coreOf(quiz)).replace("core", "Core ").toUpperCase()}
-      </Badge>
-    )}
-    {isArchived(quiz) && (
-      <Badge variant={getBadgeVariant("Archived")} className="whitespace-nowrap">
-        Archived
-      </Badge>
-    )}
-    {isHidden(quiz) && (
-      <Badge variant="destructive" className="whitespace-nowrap">
-        Hidden
-      </Badge>
-    )}
-  </span>
-</CardTitle>
+              <span className="mr-2">{quiz.title}</span>
+              {/* badges group */}
+              <span className="inline-flex items-center gap-2 whitespace-nowrap">
+                {(quiz as any).course && (quiz as any).course !== "unassigned" && (
+                  <Badge variant="outline" className="whitespace-nowrap">
+                    {String((quiz as any).course).toUpperCase()}
+                  </Badge>
+                )}
+                {courseOf(quiz) === "a+" && (
+                  <Badge variant="outline" className="whitespace-nowrap">
+                    {String(coreOf(quiz)).replace("core", "Core ").toUpperCase()}
+                  </Badge>
+                )}
+                {isArchived(quiz) && (
+                  <Badge variant={getBadgeVariant("Archived")} className="whitespace-nowrap">
+                    Archived
+                  </Badge>
+                )}
+                {isHidden(quiz) && (
+                  <Badge variant="destructive" className="whitespace-nowrap">
+                    Hidden
+                  </Badge>
+                )}
+              </span>
+            </CardTitle>
 
             <StatusBadge quiz={quiz} />
           </div>
@@ -840,7 +833,7 @@ function QuizzesPageInner() {
       ) : showChooser ? null : studentQuizzes.length > 0 ? (
         (() => {
           if (studentCourse === "a+") {
-            // Buttons like admin, but for A+ cores
+            // Students (A+): show core filters
             const allAPlus = studentQuizzes.filter((q) => courseOf(q) === "a+");
             const grouped = groupAPlusByCore(allAPlus);
             const core1List = grouped.core1;
