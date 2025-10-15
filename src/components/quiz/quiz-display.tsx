@@ -47,13 +47,27 @@ export function QuizDisplay({ quiz: initialQuiz, isPractice }: { quiz: Quiz; isP
    * ================================ */
   const antiCheatActive = !isPractice && role !== "admin";
 
+  // Detect desktop (require focus mode only on desktop)
+  const [isDesktop, setIsDesktop] = useState<boolean>(true);
+  useEffect(() => {
+    // desktop = large screen + precise pointer (mouse/trackpad)
+    const mq = window.matchMedia("(min-width: 1024px) and (pointer: fine)");
+    const update = () => setIsDesktop(mq.matches);
+    update();
+    mq.addEventListener?.("change", update);
+    return () => mq.removeEventListener?.("change", update);
+  }, []);
+  const requireFocusMode = antiCheatActive && isDesktop;
+
   // Fullscreen + locks
   const [isFullscreen, setIsFullscreen] = useState<boolean>(false);
   const [lockedUntil, setLockedUntil] = useState<number | null>(null);
   const [nowTs, setNowTs] = useState<number>(Date.now());
-  const LOCK_SECONDS = 10;
 
-  // 🚩 جديد: إيقاف الحمايات مؤقتًا أثناء التحميل/الخروج/الإنهاء
+  // 15s lock for tab/window switch (all devices)
+  const SWITCH_LOCK_SECONDS = 15;
+
+  // suppress warnings/locks while finishing (Exit/Submit)
   const [suppressGuards, setSuppressGuards] = useState<boolean>(false);
   const antiCheatLive = antiCheatActive && !suppressGuards;
 
@@ -73,41 +87,41 @@ export function QuizDisplay({ quiz: initialQuiz, isPractice }: { quiz: Quiz; isP
     } catch {}
   };
 
-  // قفل بلا مدة: يظهر فقط عند الخروج من Fullscreen
+  // lock: indefinite (leaving fullscreen) — desktop only
   const lockIndefinitely = () => {
-    if (!antiCheatLive) return; // لو مطفّي الحمايات لا نقفل
+    if (!antiCheatLive || !requireFocusMode) return;
     setLockedUntil(null);
     if (user && quiz) {
       saveQuizProgress(quiz.id, user.uid, latestAnswersRef.current, latestIndexRef.current).catch(() => {});
     }
   };
-  // قفل 10 ثوانٍ: عند تبديل التبويب/تصغير النافذة
-  const lockForTenSeconds = () => {
-    if (!antiCheatLive) return; // لو مطفّي الحمايات لا نقفل
-    setLockedUntil(Date.now() + LOCK_SECONDS * 1000);
+  // lock: 15s (tab/window switch) — all devices
+  const lockForSwitch = () => {
+    if (!antiCheatLive) return;
+    setLockedUntil(Date.now() + SWITCH_LOCK_SECONDS * 1000);
     if (user && quiz) {
       saveQuizProgress(quiz.id, user.uid, latestAnswersRef.current, latestIndexRef.current).catch(() => {});
     }
   };
 
-  // الدخول إلى الامتحان: حاول Fullscreen أوتوماتيكياً + fallback بأول نقرة
+  // enter fullscreen automatically on desktop; fallback on first click
   useEffect(() => {
-    if (!antiCheatActive) return;
+    if (!requireFocusMode) return;
     requestFullscreen();
-  }, [antiCheatActive]);
+  }, [requireFocusMode]);
   useEffect(() => {
-    if (!antiCheatActive) return;
+    if (!requireFocusMode) return;
     const onFirstPointer = async () => {
       if (!document.fullscreenElement) await requestFullscreen();
       window.removeEventListener("pointerdown", onFirstPointer, true);
     };
     window.addEventListener("pointerdown", onFirstPointer, true);
     return () => window.removeEventListener("pointerdown", onFirstPointer, true);
-  }, [antiCheatActive]);
+  }, [requireFocusMode]);
 
-  // راقب الخروج من Fullscreen ⇒ قفل غير محدود (إلا إذا كنا موقّفين الحمايات)
+  // fullscreen change ⇒ indefinite lock when leaving (desktop only)
   useEffect(() => {
-    if (!antiCheatActive) return;
+    if (!requireFocusMode) return;
     const onFsChange = () => {
       const fs = !!document.fullscreenElement;
       setIsFullscreen(fs);
@@ -115,16 +129,16 @@ export function QuizDisplay({ quiz: initialQuiz, isPractice }: { quiz: Quiz; isP
     };
     document.addEventListener("fullscreenchange", onFsChange);
     return () => document.removeEventListener("fullscreenchange", onFsChange);
-  }, [antiCheatActive, antiCheatLive]); // antiCheatLive للتأكد من احترام الإيقاف المؤقت
+  }, [requireFocusMode, antiCheatLive]);
 
-  // تبديل تبويب/تصغير نافذة ⇒ قفل 10 ثواني (إلا إذا كنا موقّفين الحمايات)
+  // tab/window switch ⇒ 15s lock (all devices)
   useEffect(() => {
     if (!antiCheatActive) return;
     const onVisibility = () => {
-      if (document.hidden) lockForTenSeconds();
+      if (document.hidden) lockForSwitch();
     };
     const onBlur = () => {
-      lockForTenSeconds();
+      lockForSwitch();
     };
     const onBeforeUnload = (e: BeforeUnloadEvent) => {
       e.preventDefault();
@@ -140,14 +154,14 @@ export function QuizDisplay({ quiz: initialQuiz, isPractice }: { quiz: Quiz; isP
     };
   }, [antiCheatActive, antiCheatLive]);
 
-  // تحديث مؤقت القفل
+  // timer for lock countdown
   useEffect(() => {
     if (!antiCheatActive) return;
     const id = setInterval(() => setNowTs(Date.now()), 300);
     return () => clearInterval(id);
   }, [antiCheatActive]);
 
-  // منع التظليل + الرايت كلك + النسخ/القص/اللصق (بدون اعتراض اختصارات)
+  // disable selection + right-click + copy/cut/paste (no keyboard shortcut interception)
   useEffect(() => {
     if (!antiCheatActive) return;
     const stop = (e: Event) => e.preventDefault();
@@ -163,7 +177,7 @@ export function QuizDisplay({ quiz: initialQuiz, isPractice }: { quiz: Quiz; isP
     };
   }, [antiCheatActive]);
 
-  // ====== تحميل بيانات الكويز ======
+  // ====== load quiz data ======
   useEffect(() => {
     if (!user) return;
 
@@ -267,11 +281,11 @@ export function QuizDisplay({ quiz: initialQuiz, isPractice }: { quiz: Quiz; isP
     };
   }, []);
 
-  // Submit/Exit: أخرج من Fullscreen ثم عطّل الحمايات حتى الاكتمال
+  // finalize/exit with guards suppressed
   const finalizeWithNoGuards = async (fn: () => Promise<void>) => {
-    setSuppressGuards(true);      // 🔕 أوقف الحمايات
-    await exitFullscreen();       // اخرج من الفول سكرين (لن يسبب قفل الآن)
-    await fn();                   // نفّذ العملية (submit/route)
+    setSuppressGuards(true);
+    await exitFullscreen(); // harmless on mobile, required on desktop
+    await fn();
   };
 
   // ====== UI ======
@@ -365,8 +379,8 @@ export function QuizDisplay({ quiz: initialQuiz, isPractice }: { quiz: Quiz; isP
         />
       </main>
 
-      {/* أوفرلاي: قفل غير محدود (عند الخروج من Fullscreen) */}
-      {antiCheatLive && !isFullscreen && !isTimedLock && (
+      {/* Overlay: Indefinite lock (leaving Full Screen) — desktop only */}
+      {antiCheatLive && requireFocusMode && !isFullscreen && !isTimedLock && (
         <div className="fixed inset-0 z-30 bg-background/90 backdrop-blur-sm flex items-center justify-center p-4">
           <Card className="max-w-md w-full">
             <CardHeader>
@@ -376,30 +390,43 @@ export function QuizDisplay({ quiz: initialQuiz, isPractice }: { quiz: Quiz; isP
               </CardTitle>
             </CardHeader>
             <CardContent className="space-y-3">
-              <p className="text-sm text-muted-foreground">
-                The exam is paused because you left <span className="font-semibold">Full Screen</span>. Please return to continue.
-              </p>
-              <Button onClick={requestFullscreen} className="w-full">Back to full screen mode</Button>
+              <div className="space-y-1 text-sm text-muted-foreground">
+                <p>
+                  The exam is paused because you left <span className="font-semibold">Full Screen</span>. Please return to continue.
+                </p>
+                <p dir="rtl">
+                  تم إيقاف الامتحان مؤقتًا لأنك خرجت من <span className="font-semibold">وضع ملء الشاشة</span>. الرجاء العودة لمتابعة الحل.
+                </p>
+              </div>
+              <Button onClick={requestFullscreen} className="w-full">
+                Back to full screen mode
+              </Button>
             </CardContent>
           </Card>
         </div>
       )}
 
-      {/* أوفرلاي: قفل زمني 10 ثواني (tab/window switch) */}
+      {/* Overlay: 15s lock (tab/window switch) — all devices */}
       {antiCheatLive && isTimedLock && (
         <div className="fixed inset-0 z-30 bg-background/90 backdrop-blur-sm flex items-center justify-center p-4">
           <Card className="max-w-md w-full shadow-2xl">
             <CardHeader className="space-y-1">
               <div className="flex items-center gap-2">
                 <ShieldAlert className="h-5 w-5 text-destructive" />
-                <CardTitle>Exam locked</CardTitle>
+                <CardTitle>Exam locked for {remainingLock}s</CardTitle>
               </div>
             </CardHeader>
             <CardContent className="space-y-3">
-              <p className="text-sm text-muted-foreground">
-                You left the exam (tab/window switch). The exam is locked for{" "}
-                <span className="font-semibold">{remainingLock}s</span>.
-              </p>
+              <div className="space-y-1 text-sm text-muted-foreground">
+                <p>
+                  You switched tabs/windows or minimized the exam. Please wait until the timer ends, then return to
+                  <span className="font-semibold"> Full Screen</span> (desktop only).
+                </p>
+                <p dir="rtl">
+                  قمت بتبديل التبويب/النافذة أو تصغير صفحة الامتحان. الرجاء الانتظار حتى نهاية العداد ثم العودة إلى
+                  <span className="font-semibold"> وضع ملء الشاشة</span> .
+                </p>
+              </div>
               <Button
                 disabled={remainingLock > 0}
                 onClick={requestFullscreen}
