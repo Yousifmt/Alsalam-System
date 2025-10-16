@@ -50,7 +50,6 @@ export function QuizDisplay({ quiz: initialQuiz, isPractice }: { quiz: Quiz; isP
   // Detect desktop (require focus mode only on desktop)
   const [isDesktop, setIsDesktop] = useState<boolean>(true);
   useEffect(() => {
-    // desktop = large screen + precise pointer (mouse/trackpad)
     const mq = window.matchMedia("(min-width: 1024px) and (pointer: fine)");
     const update = () => setIsDesktop(mq.matches);
     update();
@@ -58,6 +57,9 @@ export function QuizDisplay({ quiz: initialQuiz, isPractice }: { quiz: Quiz; isP
     return () => mq.removeEventListener?.("change", update);
   }, []);
   const requireFocusMode = antiCheatActive && isDesktop;
+
+  // ✅ جديد: اعتبر الموبايل/التاتش لسياسات عدم التحديد + تخفيض النص
+  const mobileNoSelect = antiCheatActive && !isDesktop;
 
   // Fullscreen + locks
   const [isFullscreen, setIsFullscreen] = useState<boolean>(false);
@@ -87,7 +89,6 @@ export function QuizDisplay({ quiz: initialQuiz, isPractice }: { quiz: Quiz; isP
     } catch {}
   };
 
-  // lock: indefinite (leaving fullscreen) — desktop only
   const lockIndefinitely = () => {
     if (!antiCheatLive || !requireFocusMode) return;
     setLockedUntil(null);
@@ -95,7 +96,6 @@ export function QuizDisplay({ quiz: initialQuiz, isPractice }: { quiz: Quiz; isP
       saveQuizProgress(quiz.id, user.uid, latestAnswersRef.current, latestIndexRef.current).catch(() => {});
     }
   };
-  // lock: 15s (tab/window switch) — all devices
   const lockForSwitch = () => {
     if (!antiCheatLive) return;
     setLockedUntil(Date.now() + SWITCH_LOCK_SECONDS * 1000);
@@ -104,11 +104,11 @@ export function QuizDisplay({ quiz: initialQuiz, isPractice }: { quiz: Quiz; isP
     }
   };
 
-  // enter fullscreen automatically on desktop; fallback on first click
   useEffect(() => {
     if (!requireFocusMode) return;
     requestFullscreen();
   }, [requireFocusMode]);
+
   useEffect(() => {
     if (!requireFocusMode) return;
     const onFirstPointer = async () => {
@@ -119,7 +119,6 @@ export function QuizDisplay({ quiz: initialQuiz, isPractice }: { quiz: Quiz; isP
     return () => window.removeEventListener("pointerdown", onFirstPointer, true);
   }, [requireFocusMode]);
 
-  // fullscreen change ⇒ indefinite lock when leaving (desktop only)
   useEffect(() => {
     if (!requireFocusMode) return;
     const onFsChange = () => {
@@ -131,7 +130,6 @@ export function QuizDisplay({ quiz: initialQuiz, isPractice }: { quiz: Quiz; isP
     return () => document.removeEventListener("fullscreenchange", onFsChange);
   }, [requireFocusMode, antiCheatLive]);
 
-  // tab/window switch ⇒ 15s lock (all devices)
   useEffect(() => {
     if (!antiCheatActive) return;
     const onVisibility = () => {
@@ -154,14 +152,13 @@ export function QuizDisplay({ quiz: initialQuiz, isPractice }: { quiz: Quiz; isP
     };
   }, [antiCheatActive, antiCheatLive]);
 
-  // timer for lock countdown
   useEffect(() => {
     if (!antiCheatActive) return;
     const id = setInterval(() => setNowTs(Date.now()), 300);
     return () => clearInterval(id);
   }, [antiCheatActive]);
 
-  // disable selection + right-click + copy/cut/paste (no keyboard shortcut interception)
+  // ❗️تعديل: منع التحديد بالكامل بما يشمل الموبايل
   useEffect(() => {
     if (!antiCheatActive) return;
     const stop = (e: Event) => e.preventDefault();
@@ -169,18 +166,21 @@ export function QuizDisplay({ quiz: initialQuiz, isPractice }: { quiz: Quiz; isP
     document.addEventListener("copy", stop as EventListener);
     document.addEventListener("cut", stop as EventListener);
     document.addEventListener("paste", stop as EventListener);
+    document.addEventListener("selectstart", stop as EventListener); // ⬅️ جديد
+    document.addEventListener("dragstart", stop as EventListener);   // ⬅️ جديد
     return () => {
       document.removeEventListener("contextmenu", stop);
       document.removeEventListener("copy", stop as EventListener);
       document.removeEventListener("cut", stop as EventListener);
       document.removeEventListener("paste", stop as EventListener);
+      document.removeEventListener("selectstart", stop as EventListener);
+      document.removeEventListener("dragstart", stop as EventListener);
     };
   }, [antiCheatActive]);
 
   // ====== load quiz data ======
   useEffect(() => {
     if (!user) return;
-
     const load = async () => {
       setLoading(true);
       try {
@@ -194,9 +194,7 @@ export function QuizDisplay({ quiz: initialQuiz, isPractice }: { quiz: Quiz; isP
           setInitialIndex(0);
           return;
         }
-
         const allIds = quizData.questions.map(q => q.id);
-
         if (quizData.timeLimit && !isPractice && role !== "admin") {
           const session: QuizSession = await startOrResumeActiveSession(
             quizData.id,
@@ -204,14 +202,11 @@ export function QuizDisplay({ quiz: initialQuiz, isPractice }: { quiz: Quiz; isP
             allIds,
             !!quizData.shuffleQuestions
           );
-
           setRestoredAnswers(session.answersByQuestionId || {});
           setQuestionOrder(session.order ?? allIds);
           setInitialIndex(session.currentIndex ?? 0);
-
           latestAnswersRef.current = session.answersByQuestionId || {};
           latestIndexRef.current = session.currentIndex ?? 0;
-
           const total = quizData.timeLimit * 60;
           const elapsed = Math.floor((Date.now() - session.startedAt) / 1000);
           const remaining = Math.max(total - elapsed, 0);
@@ -237,12 +232,10 @@ export function QuizDisplay({ quiz: initialQuiz, isPractice }: { quiz: Quiz; isP
         setLoading(false);
       }
     };
-
     load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [initialQuiz.id, user, role, isPractice]);
 
-  // ====== Helpers ======
   const formatTime = (sec: number) => {
     const m = Math.floor(sec / 60);
     const s = sec % 60;
@@ -256,7 +249,6 @@ export function QuizDisplay({ quiz: initialQuiz, isPractice }: { quiz: Quiz; isP
 
   const isTimeLow = timeLeft !== null && quiz?.timeLimit ? timeLeft < quiz.timeLimit * 60 * 0.1 : false;
 
-  // Debounced autosave (normal mode only)
   const queueSave = (answersByQuestionId: Record<string, string | string[]>, currentIndex: number) => {
     latestAnswersRef.current = answersByQuestionId;
     latestIndexRef.current = currentIndex;
@@ -281,14 +273,12 @@ export function QuizDisplay({ quiz: initialQuiz, isPractice }: { quiz: Quiz; isP
     };
   }, []);
 
-  // finalize/exit with guards suppressed
   const finalizeWithNoGuards = async (fn: () => Promise<void>) => {
     setSuppressGuards(true);
-    await exitFullscreen(); // harmless on mobile, required on desktop
+    await exitFullscreen();
     await fn();
   };
 
-  // ====== UI ======
   if (loading) {
     return (
       <div className="flex min-h-screen items-center justify-center">
@@ -317,10 +307,30 @@ export function QuizDisplay({ quiz: initialQuiz, isPractice }: { quiz: Quiz; isP
   }
 
   return (
-    <div className={cn("flex min-h-screen flex-col bg-secondary", antiCheatActive && "select-none")}>
+    <div
+      className={cn(
+        "flex min-h-screen flex-col bg-secondary",
+        antiCheatActive && "select-none",
+        mobileNoSelect && "mobile-no-select",                 // ⬅️ جديد
+        !isDesktop && "text-[15px] leading-snug md:text-base md:leading-normal" // ⬅️ تيبوغرافيا للجوال
+      )}
+    >
+      {/* ⬅️ ستايل Global لمنع الاختيارات على الجوال فقط في الوضع العادي */}
+      {mobileNoSelect && (
+        <style jsx global>{`
+          .mobile-no-select,
+          .mobile-no-select * {
+            -webkit-user-select: none !important;
+            -moz-user-select: none !important;
+            user-select: none !important;
+            -webkit-touch-callout: none !important;
+          }
+        `}</style>
+      )}
+
       <header className="sticky top-0 z-10 flex h-20 flex-col justify-center border-b bg-background px-4 md:px-6">
         <div className="flex items-center justify-between">
-          <h1 className="text-xl font-bold font-headline text-primary">{quiz.title}</h1>
+          <h1 className="font-bold font-headline text-primary text-lg md:text-xl">{quiz.title}</h1> {/* ⬅️ أصغر على الجوال */}
           <div className="flex items-center gap-4">
             {isPractice && (
               <Badge variant="outline" className="border-blue-500 text-blue-500">
@@ -379,7 +389,6 @@ export function QuizDisplay({ quiz: initialQuiz, isPractice }: { quiz: Quiz; isP
         />
       </main>
 
-      {/* Overlay: Indefinite lock (leaving Full Screen) — desktop only */}
       {antiCheatLive && requireFocusMode && !isFullscreen && !isTimedLock && (
         <div className="fixed inset-0 z-30 bg-background/90 backdrop-blur-sm flex items-center justify-center p-4">
           <Card className="max-w-md w-full">
@@ -406,33 +415,25 @@ export function QuizDisplay({ quiz: initialQuiz, isPractice }: { quiz: Quiz; isP
         </div>
       )}
 
-      {/* Overlay: 15s lock (tab/window switch) — all devices */}
       {antiCheatLive && isTimedLock && (
-  <div className="fixed inset-0 z-30 bg-background/90 backdrop-blur-sm flex items-center justify-center p-4">
-    <Card className="max-w-md w-full shadow-2xl">
-      <CardHeader className="space-y-1">
-        <div className="flex items-center gap-2">
-          <ShieldAlert className="h-5 w-5 text-destructive" />
-          <CardTitle>Exam locked for {remainingLock}s</CardTitle>
+        <div className="fixed inset-0 z-30 bg-background/90 backdrop-blur-sm flex items-center justify-center p-4">
+          <Card className="max-w-md w-full shadow-2xl">
+            <CardHeader className="space-y-1">
+              <div className="flex items-center gap-2">
+                <ShieldAlert className="h-5 w-5 text-destructive" />
+                <CardTitle>Exam locked for {remainingLock}s</CardTitle>
+              </div>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              <div className="space-y-2 text-sm text-muted-foreground">
+                <p>You switched tabs/windows or minimized the exam. Please wait until the timer ends.</p>
+                <p dir="rtl">قمت بتبديل التبويب/النافذة أو تصغير صفحة الامتحان. الرجاء الانتظار حتى نهاية العداد.</p>
+                <p className="text-center font-medium">{remainingLock}s</p>
+              </div>
+            </CardContent>
+          </Card>
         </div>
-      </CardHeader>
-      <CardContent className="space-y-3">
-        <div className="space-y-2 text-sm text-muted-foreground">
-          <p>
-            You switched tabs/windows or minimized the exam. Please wait until the timer ends.
-          </p>
-          <p dir="rtl">
-            قمت بتبديل التبويب/النافذة أو تصغير صفحة الامتحان. الرجاء الانتظار حتى نهاية العداد.
-          </p>
-          <p className="text-center font-medium">
-            {remainingLock}s
-          </p>
-        </div>
-        {/* No button here by request */}
-      </CardContent>
-    </Card>
-  </div>
-)}
+      )}
     </div>
   );
 }
