@@ -303,8 +303,11 @@ export default function StartQuizPage() {
                   <ShieldCheck className="h-12 w-12 text-primary mb-4" />
                   <h3 className="text-lg font-semibold">Normal Mode</h3>
                   <p className="text-muted-foreground text-sm mt-1 mb-4">
-                    Your score will be recorded and will count towards your grade.
-                  </p>
+  Your score will be recorded and will count toward your grade. This mode also uses an
+  anti-cheating system: you must stay in Full Screen, and if you switch tabs, minimize,
+  or leave this page, the quiz will be locked for 60 seconds when you return.
+</p>
+
                   {normalModeButtons()}
                 </div>
               </div>

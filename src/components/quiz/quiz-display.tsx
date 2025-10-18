@@ -66,8 +66,8 @@ export function QuizDisplay({ quiz: initialQuiz, isPractice }: { quiz: Quiz; isP
   const [lockedUntil, setLockedUntil] = useState<number | null>(null);
   const [nowTs, setNowTs] = useState<number>(Date.now());
 
-  // 15s lock for tab/window switch (all devices)
-  const SWITCH_LOCK_SECONDS = 15;
+  // 60s lock for tab/window switch (starts when user RETURNS)
+  const SWITCH_LOCK_SECONDS = 60;
 
   // suppress warnings/locks while finishing (Exit/Submit)
   const [suppressGuards, setSuppressGuards] = useState<boolean>(false);
@@ -75,6 +75,9 @@ export function QuizDisplay({ quiz: initialQuiz, isPractice }: { quiz: Quiz; isP
 
   const isTimedLock = lockedUntil !== null && lockedUntil > nowTs;
   const remainingLock = isTimedLock ? Math.max(0, Math.ceil((lockedUntil - nowTs) / 1000)) : 0;
+
+  // Track if user left and we should apply the lock ON RETURN
+  const pendingSwitchLockRef = useRef<boolean>(false);
 
   const requestFullscreen = async () => {
     try {
@@ -96,11 +99,30 @@ export function QuizDisplay({ quiz: initialQuiz, isPractice }: { quiz: Quiz; isP
       saveQuizProgress(quiz.id, user.uid, latestAnswersRef.current, latestIndexRef.current).catch(() => {});
     }
   };
+
   const lockForSwitch = () => {
     if (!antiCheatLive) return;
     setLockedUntil(Date.now() + SWITCH_LOCK_SECONDS * 1000);
     if (user && quiz) {
       saveQuizProgress(quiz.id, user.uid, latestAnswersRef.current, latestIndexRef.current).catch(() => {});
+    }
+  };
+
+  // Mark that a switch-away happened; we'll start the timer when the user RETURNS
+  const markSwitchAway = () => {
+    if (!antiCheatLive) return;
+    pendingSwitchLockRef.current = true;
+    if (user && quiz) {
+      saveQuizProgress(quiz.id, user.uid, latestAnswersRef.current, latestIndexRef.current).catch(() => {});
+    }
+  };
+
+  // Apply the pending 60s lock when user returns
+  const applyPendingSwitchLock = () => {
+    if (!antiCheatLive) return;
+    if (pendingSwitchLockRef.current) {
+      pendingSwitchLockRef.current = false;
+      lockForSwitch();
     }
   };
 
@@ -132,22 +154,41 @@ export function QuizDisplay({ quiz: initialQuiz, isPractice }: { quiz: Quiz; isP
 
   useEffect(() => {
     if (!antiCheatActive) return;
+
     const onVisibility = () => {
-      if (document.hidden) lockForSwitch();
+      if (document.hidden) {
+        // User left → queue lock to start on return
+        markSwitchAway();
+      } else {
+        // User returned → start the 60s lock now
+        applyPendingSwitchLock();
+      }
     };
+
     const onBlur = () => {
-      lockForSwitch();
+      // Leaving or de-focusing → queue lock
+      markSwitchAway();
     };
+
+    const onFocus = () => {
+      // Returned focus → start lock if queued
+      applyPendingSwitchLock();
+    };
+
     const onBeforeUnload = (e: BeforeUnloadEvent) => {
       e.preventDefault();
       e.returnValue = "";
     };
+
     document.addEventListener("visibilitychange", onVisibility);
     window.addEventListener("blur", onBlur);
+    window.addEventListener("focus", onFocus);
     window.addEventListener("beforeunload", onBeforeUnload);
+
     return () => {
       document.removeEventListener("visibilitychange", onVisibility);
       window.removeEventListener("blur", onBlur);
+      window.removeEventListener("focus", onFocus);
       window.removeEventListener("beforeunload", onBeforeUnload);
     };
   }, [antiCheatActive, antiCheatLive]);
@@ -311,8 +352,8 @@ export function QuizDisplay({ quiz: initialQuiz, isPractice }: { quiz: Quiz; isP
       className={cn(
         "flex min-h-screen flex-col bg-secondary",
         antiCheatActive && "select-none",
-        mobileNoSelect && "mobile-no-select",                 // ⬅️ جديد
-        !isDesktop && "text-[15px] leading-snug md:text-base md:leading-normal" // ⬅️ تيبوغرافيا للجوال
+        mobileNoSelect && "mobile-no-select",
+        !isDesktop && "text-[15px] leading-snug md:text-base md:leading-normal"
       )}
     >
       {/* ⬅️ ستايل Global لمنع الاختيارات على الجوال فقط في الوضع العادي */}
@@ -330,7 +371,7 @@ export function QuizDisplay({ quiz: initialQuiz, isPractice }: { quiz: Quiz; isP
 
       <header className="sticky top-0 z-10 flex h-20 flex-col justify-center border-b bg-background px-4 md:px-6">
         <div className="flex items-center justify-between">
-          <h1 className="font-bold font-headline text-primary text-lg md:text-xl">{quiz.title}</h1> {/* ⬅️ أصغر على الجوال */}
+          <h1 className="font-bold font-headline text-primary text-lg md:text-xl">{quiz.title}</h1>
           <div className="flex items-center gap-4">
             {isPractice && (
               <Badge variant="outline" className="border-blue-500 text-blue-500">
