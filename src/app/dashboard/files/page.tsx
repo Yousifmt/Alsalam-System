@@ -1,4 +1,4 @@
-// FILE: src/app/dashboard/files/page.tsx mm
+// FILE: src/app/dashboard/files/page.tsx
 "use client";
 
 import React, { useEffect, useRef, useState, useMemo } from "react";
@@ -74,18 +74,20 @@ import {
 /* ----------------------------------------------------------------------------
    Course tagging
 ----------------------------------------------------------------------------- */
-type CourseTag = "security+" | "a+" | "unassigned";
-type StudentCourseTag = "security+" | "a+";
+type CourseTag = "security+" | "a+ core 1" | "a+ core 2" | "unassigned";
+type StudentCourseTag = "security+" | "a+ core 1" | "a+ core 2";
+type LegacyOrderKey = "a+";
 
 const COURSE_PASSWORDS: Record<StudentCourseTag, string> = {
   "security+": "sy0-701",
-  "a+": "202-1201",
+  "a+ core 1": "202-1201",
+  "a+ core 2": "202-1202",
 };
 
 type ManagedFileWithCourse = ManagedFile & {
   course?: CourseTag;
-  orders?: Partial<Record<CourseTag, number>>; // per-section order
-  order?: number; // legacy
+  orders?: Partial<Record<CourseTag | LegacyOrderKey, number>>;
+  order?: number; // legacy flat
 };
 
 /* ----------------------------------------------------------------------------
@@ -97,19 +99,23 @@ function getCourseBadgeVariant(course: CourseTag | undefined) {
   switch (course) {
     case "security+":
       return "default";
-    case "a+":
+    case "a+ core 1":
+    case "a+ core 2":
       return "secondary";
     default:
       return "outline";
   }
 }
 
-function FileRowSkeleton() {
+// Skeleton row that adapts to admin/student
+function FileRowSkeleton({ admin }: { admin?: boolean }) {
   return (
     <TableRow>
-      <TableCell className="w-24">
-        <Skeleton className="h-8 w-16" />
-      </TableCell>
+      {admin && (
+        <TableCell className="w-24">
+          <Skeleton className="h-8 w-16" />
+        </TableCell>
+      )}
       <TableCell>
         <div className="flex items-center gap-3">
           <Skeleton className="h-5 w-5 rounded-sm" />
@@ -122,29 +128,37 @@ function FileRowSkeleton() {
       <TableCell>
         <Skeleton className="h-9 w-24 ml-auto" />
       </TableCell>
+      <TableCell className="text-right">
+        <Skeleton className="h-8 w-8 ml-auto rounded" />
+      </TableCell>
     </TableRow>
   );
 }
 
+// keep legacy "a+" order as fallback for both cores
 function getEffectiveOrder(file: ManagedFileWithCourse, section: CourseTag): number {
   const big = 1_000_000_000;
-  const fromOrders = file.orders?.[section];
-  const fromLegacy = file.order;
+  const fromSection = file.orders?.[section];
+  const fromLegacyAPlus = (file.orders as Record<string, number> | undefined)?.["a+"];
+  const fromLegacyFlat = file.order;
   const fromUnassigned = file.orders?.["unassigned"];
   return (
-    (typeof fromOrders === "number" ? fromOrders : undefined) ??
-    (typeof fromLegacy === "number" ? fromLegacy : undefined) ??
+    (typeof fromSection === "number" ? fromSection : undefined) ??
+    (section.startsWith("a+ core") && typeof fromLegacyAPlus === "number" ? fromLegacyAPlus : undefined) ??
+    (typeof fromLegacyFlat === "number" ? fromLegacyFlat : undefined) ??
     (typeof fromUnassigned === "number" ? fromUnassigned : undefined) ??
     big
   );
 }
 
 function sortBySectionOrder(items: ManagedFileWithCourse[], section: CourseTag) {
-  return items.slice().sort(
-    (a, b) =>
-      getEffectiveOrder(a, section) - getEffectiveOrder(b, section) ||
-      a.name.localeCompare(b.name)
-  );
+  return items
+    .slice()
+    .sort(
+      (a, b) =>
+        getEffectiveOrder(a, section) - getEffectiveOrder(b, section) ||
+        a.name.localeCompare(b.name)
+    );
 }
 
 /* ----------------------------------------------------------------------------
@@ -162,7 +176,7 @@ export default function FilesPage() {
   const [uploading, setUploading] = useState(false);
   const [deletingPath, setDeletingPath] = useState<string | null>(null);
   const [assigningPath, setAssigningPath] = useState<string | null>(null);
-  const [reorderingKey, setReorderingKey] = useState<string | null>(null); // `${section}:${path}`
+  const [reorderingKey, setReorderingKey] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   // student chooser
@@ -181,18 +195,24 @@ export default function FilesPage() {
       const snap = await getDocs(collection(db, "files"));
       const metaMap = new Map<
         string,
-        { course: CourseTag; orders?: Partial<Record<CourseTag, number>>; order?: number }
+        { course: CourseTag; orders?: Partial<Record<CourseTag | LegacyOrderKey, number>>; order?: number }
       >();
+
       snap.forEach((d) => {
         const data = d.data() as any;
-        const c: CourseTag =
-          data?.course === "security+" || data?.course === "a+"
-            ? data.course
-            : "unassigned";
-        const orders = data?.orders as Partial<Record<CourseTag, number>> | undefined;
+        let c: CourseTag;
+        if (data?.course === "security+" || data?.course === "a+ core 1" || data?.course === "a+ core 2") {
+          c = data.course;
+        } else if (data?.course === "a+") {
+          c = "a+ core 1"; // back-compat
+        } else {
+          c = "unassigned";
+        }
+        const orders = data?.orders as Partial<Record<CourseTag | LegacyOrderKey, number>> | undefined;
         const order = typeof data?.order === "number" ? data.order : undefined;
         metaMap.set(d.id, { course: c, orders, order });
       });
+
       const withCourse: ManagedFileWithCourse[] = base.map((f) => {
         const meta = metaMap.get(fileDocId(f.path));
         return {
@@ -222,9 +242,16 @@ export default function FilesPage() {
       try {
         const snap = await getDoc(doc(db, "users", user.uid));
         const data = snap.exists() ? (snap.data() as any) : {};
-        const c = data.courseTag as StudentCourseTag | undefined;
-        if (c === "security+" || c === "a+") {
-          setStudentCourse(c);
+        const raw = data.courseTag as string | undefined;
+
+        if (raw === "security+" || raw === "a+ core 1" || raw === "a+ core 2") {
+          setStudentCourse(raw as StudentCourseTag);
+          setShowChooser(false);
+        } else if (raw === "a+") {
+          setStudentCourse("a+ core 1"); // migrate silently
+          try {
+            await updateDoc(doc(db, "users", user.uid), { courseTag: "a+ core 1" });
+          } catch {}
           setShowChooser(false);
         } else {
           setStudentCourse(null);
@@ -294,7 +321,7 @@ export default function FilesPage() {
     }
   };
 
-  /* ------------------------ Submit password (FIX) -------------------------- */
+  /* ------------------------ Submit password -------------------------- */
   const submitPassword = async () => {
     if (!pendingCourse || !user) return;
     setPwSubmitting(true);
@@ -333,23 +360,24 @@ export default function FilesPage() {
       if (currentIdx < 0) return;
 
       const targetIdx = Math.max(0, Math.min(newPos - 1, sorted.length - 1));
-      if (targetIdx === currentIdx) return; // no change
+      if (targetIdx === currentIdx) return;
 
       const next = sorted.slice();
       const [moved] = next.splice(currentIdx, 1);
       next.splice(targetIdx, 0, moved);
 
-      // write sequential 1..N for this section
       const batch = writeBatch(db);
-      const updatedMap = new Map<string, Partial<Record<CourseTag, number>>>();
+      const updatedMap = new Map<string, Partial<Record<CourseTag | LegacyOrderKey, number>>>();
       next.forEach((f, idx) => {
-        const newOrders = { ...(f.orders ?? {}), [section]: idx + 1 };
+        const newOrders: Partial<Record<CourseTag | LegacyOrderKey, number>> = {
+          ...(f.orders ?? {}),
+          [section]: idx + 1,
+        };
         updatedMap.set(f.path, newOrders);
         batch.set(doc(db, "files", fileDocId(f.path)), { orders: newOrders }, { merge: true });
       });
       await batch.commit();
 
-      // update local state
       setFiles((prev) =>
         prev.map((f) => (updatedMap.has(f.path) ? { ...f, orders: updatedMap.get(f.path)! } : f))
       );
@@ -361,80 +389,77 @@ export default function FilesPage() {
     }
   }
 
-  // Visible list for students (sorted)
-  const visibleFiles: ManagedFileWithCourse[] = isStudent
-    ? files.filter((f) => {
-        const c = f.course ?? "unassigned";
-        return c === "unassigned" || c === studentCourse;
-      })
-    : files;
-
-  const studentSorted = useMemo(() => {
-    if (!isStudent) return [];
-    return visibleFiles.slice().sort((a, b) => {
-      const pa = a.course === studentCourse ? 0 : 1;
-      const pb = b.course === studentCourse ? 0 : 1;
-      if (pa !== pb) return pa - pb;
-      const secA = (a.course ?? "unassigned") as CourseTag;
-      const secB = (b.course ?? "unassigned") as CourseTag;
-      const oa = getEffectiveOrder(a, secA);
-      const ob = getEffectiveOrder(b, secB);
-      return oa - ob || a.name.localeCompare(b.name);
-    });
-  }, [isStudent, visibleFiles, studentCourse]);
-
-  // Grouping for admin (sorted)
+  /* -------------------- Student & Admin sectioned views -------------------- */
+  // Admin groupings
   const adminUnassigned = useMemo(
-    () =>
-      isAdmin
-        ? sortBySectionOrder(
-            files.filter((f) => (f.course ?? "unassigned") === "unassigned"),
-            "unassigned"
-          )
-        : [],
+    () => (isAdmin ? sortBySectionOrder(files.filter((f) => (f.course ?? "unassigned") === "unassigned"), "unassigned") : []),
     [isAdmin, files]
   );
   const adminSecurity = useMemo(
     () => (isAdmin ? sortBySectionOrder(files.filter((f) => f.course === "security+"), "security+") : []),
     [isAdmin, files]
   );
-  const adminAPlus = useMemo(
-    () => (isAdmin ? sortBySectionOrder(files.filter((f) => f.course === "a+"), "a+") : []),
+  const adminAPlusCore1 = useMemo(
+    () => (isAdmin ? sortBySectionOrder(files.filter((f) => f.course === "a+ core 1"), "a+ core 1") : []),
+    [isAdmin, files]
+  );
+  const adminAPlusCore2 = useMemo(
+    () => (isAdmin ? sortBySectionOrder(files.filter((f) => f.course === "a+ core 2"), "a+ core 2") : []),
     [isAdmin, files]
   );
 
+  // Student groupings (split view)
+  const studentUnassigned = useMemo(
+    () => (isStudent ? sortBySectionOrder(files.filter((f) => (f.course ?? "unassigned") === "unassigned"), "unassigned") : []),
+    [isStudent, files]
+  );
+  const studentSecurity = useMemo(
+    () => (isStudent ? sortBySectionOrder(files.filter((f) => f.course === "security+"), "security+") : []),
+    [isStudent, files]
+  );
+  const studentCore1 = useMemo(
+    () => (isStudent ? sortBySectionOrder(files.filter((f) => f.course === "a+ core 1"), "a+ core 1") : []),
+    [isStudent, files]
+  );
+  const studentCore2 = useMemo(
+    () => (isStudent ? sortBySectionOrder(files.filter((f) => f.course === "a+ core 2"), "a+ core 2") : []),
+    [isStudent, files]
+  );
+
   /* ------------------------------- Reusable UI ------------------------------ */
+  // Students: icon-only download; Admin: dropdown (download + delete)
   const FileActions: React.FC<{ file: ManagedFileWithCourse; showDelete?: boolean }> = ({
     file,
     showDelete,
-  }) => (
-    <DropdownMenu>
-      <DropdownMenuTrigger asChild>
-        <Button
-          aria-haspopup="true"
-          size="icon"
-          variant="ghost"
-          className="shrink-0"
-          disabled={deletingPath === file.path}
-        >
-          <MoreHorizontal className="h-4 w-4" />
-          <span className="sr-only">Toggle menu</span>
-        </Button>
-      </DropdownMenuTrigger>
-      <DropdownMenuContent align="end">
-        <DropdownMenuItem asChild>
-          <a
-            href={file.url}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="flex items-center gap-2 cursor-pointer"
+  }) =>
+    showDelete ? (
+      // Admin
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild>
+          <Button
+            aria-haspopup="true"
+            size="icon"
+            variant="ghost"
+            className="shrink-0"
+            disabled={deletingPath === file.path}
           >
-            <Download className="h-4 w-4" />
-            Download
-          </a>
-        </DropdownMenuItem>
+            <MoreHorizontal className="h-4 w-4" />
+            <span className="sr-only">Toggle menu</span>
+          </Button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="end">
+          <DropdownMenuItem asChild>
+            <a
+              href={file.url}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="flex items-center gap-2 cursor-pointer"
+            >
+              <Download className="h-4 w-4" />
+              Download
+            </a>
+          </DropdownMenuItem>
 
-        {showDelete && (
           <DropdownMenuItem
             onClick={() => handleDeleteFile(file.path)}
             className="flex items-center gap-2 text-red-500 hover:text-red-500 focus:text-red-500"
@@ -447,12 +472,17 @@ export default function FilesPage() {
             )}
             {deletingPath === file.path ? "Deleting..." : "Delete"}
           </DropdownMenuItem>
-        )}
-      </DropdownMenuContent>
-    </DropdownMenu>
-  );
+        </DropdownMenuContent>
+      </DropdownMenu>
+    ) : (
+      // Student
+      <Button asChild variant="ghost" size="icon" className="shrink-0">
+        <a href={file.url} target="_blank" rel="noopener noreferrer" aria-label="Download">
+          <Download className="h-4 w-4" />
+        </a>
+      </Button>
+    );
 
-  // Get current position (index+1) of file in section
   function getCurrentPos(file: ManagedFileWithCourse, section: CourseTag, items: ManagedFileWithCourse[]) {
     const sorted = sortBySectionOrder(items, section);
     const idx = sorted.findIndex((x) => x.path === file.path);
@@ -466,7 +496,7 @@ export default function FilesPage() {
   }> = ({ section, items, file }) => {
     const count = items.length || 1;
     const current = getCurrentPos(file, section, items);
-    const disabled = reorderingKey !== null; // lock during write
+    const disabled = reorderingKey !== null;
     return (
       <div className="flex items-center gap-2">
         <Select
@@ -485,9 +515,7 @@ export default function FilesPage() {
             ))}
           </SelectContent>
         </Select>
-        {reorderingKey?.startsWith(`${section}:`) ? (
-          <Loader2 className="h-4 w-4 animate-spin" />
-        ) : null}
+        {reorderingKey?.startsWith(`${section}:`) ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
       </div>
     );
   };
@@ -498,20 +526,16 @@ export default function FilesPage() {
     items: ManagedFileWithCourse[];
   }> = ({ file, section, items }) => (
     <TableRow key={`${file.path}-${section}`}>
-      {/* Order BEFORE name */}
       <TableCell className="w-24">
         <OrderSelect section={section} items={items} file={file} />
       </TableCell>
-
       <TableCell className="font-medium">
         <div className="flex items-center gap-3 min-w-0">
           <FileText className="h-5 w-5 text-muted-foreground shrink-0" />
           <span className="truncate break-all">{file.name}</span>
         </div>
       </TableCell>
-
       <TableCell className="hidden md:table-cell">{file.size}</TableCell>
-
       <TableCell>
         <div className="flex items-center gap-2">
           <Select
@@ -519,19 +543,19 @@ export default function FilesPage() {
             onValueChange={(v: CourseTag) => assignCourse(file, v)}
             disabled={assigningPath === file.path || reorderingKey !== null}
           >
-            <SelectTrigger className="w-[180px]">
+            <SelectTrigger className="w-[200px]">
               <SelectValue placeholder="Assign course" />
             </SelectTrigger>
             <SelectContent>
               <SelectItem value="unassigned">All (unassigned)</SelectItem>
               <SelectItem value="security+">Security+</SelectItem>
-              <SelectItem value="a+">A+</SelectItem>
+              <SelectItem value="a+ core 1">A+ Core 1</SelectItem>
+              <SelectItem value="a+ core 2">A+ Core 2</SelectItem>
             </SelectContent>
           </Select>
           {assigningPath === file.path ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
         </div>
       </TableCell>
-
       <TableCell className="text-right">
         <FileActions file={file} showDelete />
       </TableCell>
@@ -540,7 +564,7 @@ export default function FilesPage() {
 
   const DesktopRowStudent: React.FC<{ file: ManagedFileWithCourse }> = ({ file }) => (
     <TableRow key={file.path}>
-      <TableCell className="w-24">{/* spacer for alignment */}</TableCell>
+      {/* لا يوجد عمود spacer للطالب */}
       <TableCell className="font-medium">
         <div className="flex items-center gap-3 min-w-0">
           <FileText className="h-5 w-5 text-muted-foreground shrink-0" />
@@ -571,23 +595,18 @@ export default function FilesPage() {
         <div className="flex items-start gap-2">
           <p className="font-medium truncate break-all">{file.name}</p>
         </div>
-
         <div className="mt-1 text-sm text-muted-foreground flex flex-wrap gap-2">
           {file.size ? <span>{file.size}</span> : null}
           {!isAdminView && (
             <Badge variant={getCourseBadgeVariant(file.course)}>
-              {(file.course ?? "unassigned") === "unassigned"
-                ? "All"
-                : String(file.course).toUpperCase()}
+              {(file.course ?? "unassigned") === "unassigned" ? "All" : String(file.course).toUpperCase()}
             </Badge>
           )}
         </div>
 
         {isAdminView && sectionForAdmin && itemsForAdmin ? (
           <div className="mt-2 grid grid-cols-2 gap-2">
-            {/* Order dropdown */}
             <OrderSelect section={sectionForAdmin} items={itemsForAdmin} file={file} />
-            {/* Course selector */}
             <div>
               <Select
                 value={(file.course ?? "unassigned") as CourseTag}
@@ -600,7 +619,8 @@ export default function FilesPage() {
                 <SelectContent>
                   <SelectItem value="unassigned">All (unassigned)</SelectItem>
                   <SelectItem value="security+">Security+</SelectItem>
-                  <SelectItem value="a+">A+</SelectItem>
+                  <SelectItem value="a+ core 1">A+ Core 1</SelectItem>
+                  <SelectItem value="a+ core 2">A+ Core 2</SelectItem>
                 </SelectContent>
               </Select>
             </div>
@@ -632,7 +652,7 @@ export default function FilesPage() {
           <Table className="table-fixed">
             <TableHeader>
               <TableRow>
-                <TableHead className="w-24">Order</TableHead>
+                {admin && <TableHead className="w-24">Order</TableHead>}
                 <TableHead className="w-1/2">Name</TableHead>
                 <TableHead className="hidden md:table-cell w-24">Size</TableHead>
                 <TableHead className="w-48">{admin ? "Course" : " "}</TableHead>
@@ -673,6 +693,18 @@ export default function FilesPage() {
       </div>
     );
   };
+
+  const pendingTitle =
+    pendingCourse === "security+"
+      ? "Security+"
+      : pendingCourse === "a+ core 1"
+      ? "A+ Core 1"
+      : pendingCourse === "a+ core 2"
+      ? "A+ Core 2"
+      : "";
+
+  const pendingPlaceholder =
+    pendingCourse === "security+" ? "sy0-701" : pendingCourse === "a+ core 1" ? "202-1201" : "202-1202";
 
   return (
     <div className="space-y-6 max-w-full overflow-x-hidden px-2 sm:px-0">
@@ -738,27 +770,38 @@ export default function FilesPage() {
             <Button
               className="flex-1"
               onClick={() => {
-                setPendingCourse("a+");
+                setPendingCourse("a+ core 1");
                 setPwInput("");
                 setPwDialogOpen(true);
               }}
             >
               <Cpu className="mr-2 h-4 w-4" />
-              A+
+              A+ Core 1
+            </Button>
+            <Button
+              className="flex-1"
+              onClick={() => {
+                setPendingCourse("a+ core 2");
+                setPwInput("");
+                setPwDialogOpen(true);
+              }}
+            >
+              <Cpu className="mr-2 h-4 w-4" />
+              A+ Core 2
             </Button>
           </CardContent>
           <Dialog open={pwDialogOpen} onOpenChange={setPwDialogOpen}>
             <DialogContent className="max-w-lg w-[95vw]">
               <DialogHeader>
                 <DialogTitle>
-                  Enter Access Code ({pendingCourse === "a+" ? "A+" : "Security+"})
+                  Enter Access Code {pendingTitle ? `(${pendingTitle})` : ""}
                 </DialogTitle>
               </DialogHeader>
               <div className="space-y-2">
                 <Label htmlFor="course-code">Code (case-insensitive)</Label>
                 <Input
                   id="course-code"
-                  placeholder={pendingCourse === "a+" ? "202-1201" : "sy0-701"}
+                  placeholder={pendingPlaceholder}
                   value={pwInput}
                   onChange={(e) => setPwInput(e.target.value)}
                   onKeyDown={(e) => e.key === "Enter" && submitPassword()}
@@ -785,7 +828,7 @@ export default function FilesPage() {
           <CardTitle>All Files</CardTitle>
           <CardDescription>
             {isStudent
-              ? "Files for your course are shown automatically (including any unassigned)."
+              ? "Files are grouped by section (Security+ / A+ Core 1 / A+ Core 2) plus any unassigned files."
               : "Assign files and choose their order per section using the number dropdown."}
           </CardDescription>
         </CardHeader>
@@ -797,10 +840,10 @@ export default function FilesPage() {
                 <Table>
                   <TableHeader>
                     <TableRow>
-                      <TableHead className="w-24">Order</TableHead>
+                      {isAdmin && <TableHead className="w-24">Order</TableHead>}
                       <TableHead>Name</TableHead>
                       <TableHead className="hidden md:table-cell">Size</TableHead>
-                      <TableHead>Course</TableHead>
+                      <TableHead>{isAdmin ? "Course" : " "}</TableHead>
                       <TableHead>
                         <span className="sr-only">Actions</span>
                       </TableHead>
@@ -808,7 +851,7 @@ export default function FilesPage() {
                   </TableHeader>
                   <TableBody>
                     {[...Array(4)].map((_, i) => (
-                      <FileRowSkeleton key={i} />
+                      <FileRowSkeleton key={i} admin={isAdmin} />
                     ))}
                   </TableBody>
                 </Table>
@@ -844,7 +887,7 @@ export default function FilesPage() {
                 />
 
                 {(adminUnassigned.length > 0 &&
-                  (adminSecurity.length > 0 || adminAPlus.length > 0)) && (
+                  (adminSecurity.length > 0 || adminAPlusCore1.length > 0 || adminAPlusCore2.length > 0)) && (
                   <Separator className="my-2" />
                 )}
 
@@ -856,21 +899,35 @@ export default function FilesPage() {
                   admin
                 />
 
-                {adminSecurity.length > 0 && adminAPlus.length > 0 && (
+                {(adminSecurity.length > 0 &&
+                  (adminAPlusCore1.length > 0 || adminAPlusCore2.length > 0)) && (
                   <Separator className="my-2" />
                 )}
 
                 <SectionDesktop
-                  title="A+ Files"
+                  title="A+ Core 1 Files"
                   icon={<Cpu className="h-5 w-5 text-muted-foreground" />}
-                  items={adminAPlus}
-                  section="a+"
+                  items={adminAPlusCore1}
+                  section="a+ core 1"
+                  admin
+                />
+
+                {adminAPlusCore1.length > 0 && adminAPlusCore2.length > 0 && (
+                  <Separator className="my-2" />
+                )}
+
+                <SectionDesktop
+                  title="A+ Core 2 Files"
+                  icon={<Cpu className="h-5 w-5 text-muted-foreground" />}
+                  items={adminAPlusCore2}
+                  section="a+ core 2"
                   admin
                 />
 
                 {adminUnassigned.length === 0 &&
                   adminSecurity.length === 0 &&
-                  adminAPlus.length === 0 && (
+                  adminAPlusCore1.length === 0 &&
+                  adminAPlusCore2.length === 0 && (
                     <div className="text-center text-muted-foreground p-8">
                       <p>You haven't uploaded any files yet.</p>
                     </div>
@@ -881,40 +938,59 @@ export default function FilesPage() {
                 <p>You haven't uploaded any files yet.</p>
               </div>
             )
-          ) : studentSorted.length > 0 ? (
-            <>
-              {/* Desktop table */}
-              <div className="hidden md:block">
-                <Table className="table-fixed">
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead className="w-24">{/* spacer for order */}</TableHead>
-                      <TableHead className="w-1/2">Name</TableHead>
-                      <TableHead className="hidden md:table-cell w-24">Size</TableHead>
-                      <TableHead className="w-36"> </TableHead>
-                      <TableHead className="w-16">
-                        <span className="sr-only">Actions</span>
-                      </TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {studentSorted.map((file) => (
-                      <DesktopRowStudent key={file.path} file={file} />
-                    ))}
-                  </TableBody>
-                </Table>
-              </div>
-
-              {/* Mobile cards */}
-              <div className="md:hidden grid grid-cols-1 gap-3">
-                {studentSorted.map((file) => (
-                  <MobileCard key={file.path} file={file} />
-                ))}
-              </div>
-            </>
           ) : (
-            <div className="text-center text-muted-foreground p-8">
-              <p>No files have been shared with you.</p>
+            // -------- Student split view --------
+            <div className="space-y-6">
+              {studentCourse === "security+" ? (
+                <>
+                  <SectionDesktop
+                    title="Security+ Files"
+                    icon={<Shield className="h-5 w-5 text-muted-foreground" />}
+                    items={studentSecurity}
+                    section="security+"
+                  />
+                  <SectionDesktop
+                    title="Unassigned (All)"
+                    icon={<FileText className="h-5 w-5 text-muted-foreground" />}
+                    items={studentUnassigned}
+                    section="unassigned"
+                  />
+                  {studentSecurity.length === 0 && studentUnassigned.length === 0 && (
+                    <div className="text-center text-muted-foreground p-8">
+                      <p>No files have been shared with you.</p>
+                    </div>
+                  )}
+                </>
+              ) : (
+                // A+ students see Core 1 & Core 2 split + Unassigned
+                <>
+                  <SectionDesktop
+                    title="A+ Core 1 Files"
+                    icon={<Cpu className="h-5 w-5 text-muted-foreground" />}
+                    items={studentCore1}
+                    section="a+ core 1"
+                  />
+                  <SectionDesktop
+                    title="A+ Core 2 Files"
+                    icon={<Cpu className="h-5 w-5 text-muted-foreground" />}
+                    items={studentCore2}
+                    section="a+ core 2"
+                  />
+                  <SectionDesktop
+                    title="Unassigned (All)"
+                    icon={<FileText className="h-5 w-5 text-muted-foreground" />}
+                    items={studentUnassigned}
+                    section="unassigned"
+                  />
+                  {studentCore1.length === 0 &&
+                    studentCore2.length === 0 &&
+                    studentUnassigned.length === 0 && (
+                      <div className="text-center text-muted-foreground p-8">
+                        <p>No files have been shared with you.</p>
+                      </div>
+                    )}
+                </>
+              )}
             </div>
           )}
         </CardContent>
