@@ -10,7 +10,7 @@ import React, {
 } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
-import { doc, getDoc, updateDoc } from "firebase/firestore";
+import { doc, getDoc, setDoc, updateDoc, serverTimestamp } from "firebase/firestore";
 import { db } from "@/lib/firebase";
 import { useAuth } from "@/context/auth-context";
 
@@ -43,6 +43,8 @@ import {
   EyeOff,
   Eye,
   Trash2,
+  RefreshCcw,
+  KeyRound,
 } from "lucide-react";
 
 import dynamicImport from "next/dynamic";
@@ -65,7 +67,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 
-// ✅ NEW: robust normalization/grouping helpers
+// ✅ helpers
 import {
   groupByCourseTag as groupByCourseSafe,
   normalizeQuizCourse,
@@ -86,7 +88,7 @@ const Draggable = dynamicImport(
 );
 
 /* ────────────────────────────────────────────────────────────────
-   Types / helpers
+   Types / constants
 ──────────────────────────────────────────────────────────────── */
 type CourseTag = "security+" | "a+" | "unassigned";
 type StudentCourseTag = "security+" | "a+";
@@ -95,13 +97,23 @@ type AdminFilter = "all" | "security+" | "a+" | "hidden";
 // A+ core sub-tag (for quizzes whose course === "a+")
 type APlusCore = "core1" | "core2" | "unassigned";
 const CORE_ORDER: APlusCore[] = ["core1", "core2", "unassigned"];
-
 const SECTION_ORDER: CourseTag[] = ["security+", "a+", "unassigned"];
 
 const COURSE_PASSWORDS: Record<StudentCourseTag, string> = {
   "security+": "sy0-701-student-353535",
   "a+": "202-1201",
 };
+
+// 🔐 Admin override code for RE-ASSIGN only
+const ADMIN_OVERRIDE_CODE = "353535";
+
+/* ────────────────────────────────────────────────────────────────
+   Utils
+──────────────────────────────────────────────────────────────── */
+function normalizeStudentCourseTag(x: any): StudentCourseTag | null {
+  const v = (x ?? "").toString().trim().toLowerCase();
+  return v === "security+" || v === "a+" ? (v as StudentCourseTag) : null;
+}
 
 function getBadgeVariant(status: string) {
   switch (status) {
@@ -179,7 +191,7 @@ function SectionDivider({ label }: { label: string }) {
 }
 
 /* ────────────────────────────────────────────────────────────────
-   Client wrapper with Suspense for useSearchParams
+   Wrapper
 ──────────────────────────────────────────────────────────────── */
 export default function QuizzesClient() {
   return (
@@ -207,7 +219,7 @@ export default function QuizzesClient() {
 }
 
 /* ────────────────────────────────────────────────────────────────
-   Real page content
+   Page
 ──────────────────────────────────────────────────────────────── */
 function QuizzesPageInner() {
   const router = useRouter();
@@ -221,13 +233,20 @@ function QuizzesPageInner() {
   const [savingOrder, setSavingOrder] = useState(false);
   const [beforeDnD, setBeforeDnD] = useState<Quiz[] | null>(null);
 
-  // STUDENT: first-visit selection
+  // STUDENT: state
   const [studentCourse, setStudentCourse] = useState<StudentCourseTag | null>(null);
-  const [showChooser, setShowChooser] = useState(false);
-  const [pwDialogOpen, setPwDialogOpen] = useState(false);
-  const [pwInput, setPwInput] = useState("");
+
+  // Initial choose (first time only)
+  const [showInitialChooser, setShowInitialChooser] = useState(false);
   const [pendingCourse, setPendingCourse] = useState<StudentCourseTag | null>(null);
-  const [pwSubmitting, setPwSubmitting] = useState(false);
+  const [courseCodeInput, setCourseCodeInput] = useState("");
+  const [initialSubmitting, setInitialSubmitting] = useState(false);
+
+  // Re-assign (admin override only)
+  const [showReassignPanel, setShowReassignPanel] = useState(false);
+  const [adminCodeInput, setAdminCodeInput] = useState("");
+  const [reassignCourse, setReassignCourse] = useState<StudentCourseTag | null>(null);
+  const [reassignSubmitting, setReassignSubmitting] = useState(false);
 
   // ADMIN: filter
   const [adminFilter, setAdminFilter] = useState<AdminFilter>("all");
@@ -239,7 +258,7 @@ function QuizzesPageInner() {
   const roleReady = role === "admin" || role === "student";
 
   useEffect(() => {
-    if (params.get("choose") === "1") setShowChooser(true);
+    if (params.get("choose") === "1") setShowInitialChooser(true);
   }, [params]);
 
   useEffect(() => {
@@ -249,7 +268,7 @@ function QuizzesPageInner() {
       try {
         const fetched = role === "admin" ? await getQuizzes() : await getQuizzesForUser(user.uid);
 
-        // ✅ normalize every quiz immediately to guarantee safe 'course' & 'core'
+        // normalize quizzes
         const normalized = (fetched ?? []).map(normalizeQuizCourse);
         setQuizzes(normalized);
 
@@ -265,15 +284,29 @@ function QuizzesPageInner() {
           }
           setAverageScores(scores);
         } else {
+          // student: read course + lock
           const snap = await getDoc(doc(db, "users", user.uid));
           const data: any = snap.exists() ? snap.data() : {};
-          const c = data.courseTag as StudentCourseTag | undefined;
-          if (c) {
-            setStudentCourse(c);
-            setShowChooser(false);
+          const current = normalizeStudentCourseTag(data.courseTag);
+          const locked = !!data.courseLocked;
+
+          if (current) {
+            setStudentCourse(current);
+            setShowInitialChooser(false); // course already set = locked unless admin override
           } else {
+            // not set yet -> force initial chooser
             setStudentCourse(null);
-            setShowChooser(true);
+            setShowInitialChooser(true);
+          }
+
+          // If manually forced choose via query, ignore lock (first set only)
+          if (!current && params.get("choose") === "1") {
+            setShowInitialChooser(true);
+          }
+
+          // Safety: if locked, prevent initial chooser
+          if (locked && current) {
+            setShowInitialChooser(false);
           }
         }
       } catch (e) {
@@ -283,12 +316,11 @@ function QuizzesPageInner() {
       }
     };
     run();
-  }, [roleReady, role, user]);
+  }, [roleReady, role, user, params]);
 
   /* ── Filters: Admin + Student ───────────────────────────────────────────── */
 
   const adminQuizzes = useMemo(() => {
-    // work from normalized source
     if (adminFilter === "hidden") {
       return quizzes.filter((q) => isHidden(q));
     }
@@ -298,11 +330,13 @@ function QuizzesPageInner() {
   }, [quizzes, adminFilter]);
 
   const studentQuizzes = useMemo(() => {
-    if (!studentCourse) return [];
-    return quizzes.filter((q) => {
+    const base = quizzes.filter((q) => !isArchived(q) && !isHidden(q));
+    if (!studentCourse) {
+      // show only unassigned until first set
+      return base.filter((q) => courseOf(q) === "unassigned");
+    }
+    return base.filter((q) => {
       const c: CourseTag = courseOf(q);
-      if (isArchived(q)) return false;
-      if (isHidden(q)) return false;
       return c === "unassigned" || c === studentCourse;
     });
   }, [quizzes, studentCourse]);
@@ -317,10 +351,8 @@ function QuizzesPageInner() {
       return (a.title || "").localeCompare(b.title || "");
     });
 
-  // ✅ use the safe grouping from utils (always-initialized buckets)
   function groupByCourseTagSafe(arr: Quiz[]): Record<CourseTag, Quiz[]> {
-    const grouped = groupByCourseSafe(arr); // { unassigned, "security+", "a+" }
-    // ensure deterministic sort per bucket
+    const grouped = groupByCourseSafe(arr);
     return {
       "security+": sortQuizzes(grouped["security+"]),
       "a+": sortQuizzes(grouped["a+"]),
@@ -329,34 +361,25 @@ function QuizzesPageInner() {
   }
 
   function groupAPlusByCore(arr: Quiz[]): Record<APlusCore, Quiz[]> {
-    // arr here should already be only A+ quizzes (normalized)
-    const groups: Record<APlusCore, Quiz[]> = {
-      core1: [],
-      core2: [],
-      unassigned: [],
-    };
+    const groups: Record<APlusCore, Quiz[]> = { core1: [], core2: [], unassigned: [] };
     for (const q of arr) groups[coreOf(q)].push(q);
     for (const key of CORE_ORDER) groups[key] = sortQuizzes(groups[key]);
     return groups;
   }
 
-  /* ── DnD (group-aware with A+ cores) ───────────────────────────────────── */
+  /* ── DnD (admin) ───────────────────────────────────────────────────────── */
 
   function buildAdminDroppableMap(list: Quiz[]): Record<string, Quiz[]> {
-    const byCourse = groupByCourseTagSafe(list); // safe buckets
+    const byCourse = groupByCourseTagSafe(list);
     const map: Record<string, Quiz[]> = {};
-
-    // always keep course sections
     map["security+"] = byCourse["security+"];
 
     if (adminFilter === "a+") {
-      // ONLY split by cores when the admin filter is A+
       const aplus = groupAPlusByCore(byCourse["a+"]);
       map["a+::core1"] = aplus.core1;
       map["a+::core2"] = aplus.core2;
       map["a+::unassigned"] = aplus.unassigned;
     } else {
-      // All / Hidden / Security+ -> show A+ as a single section
       map["a+"] = byCourse["a+"];
     }
 
@@ -368,26 +391,18 @@ function QuizzesPageInner() {
     if (adminFilter === "a+") return ["a+::core1", "a+::core2", "a+::unassigned"];
     if (adminFilter === "security+") return ["security+"];
     if (adminFilter === "hidden") return ["security+", "a+", "unassigned"];
-    // "all" (default): show only course sections
     return ["security+", "a+", "unassigned"];
   }
 
   function labelForDroppable(id: string): string {
     switch (id) {
-      case "security+":
-        return "SECURITY+";
-      case "a+":
-        return "A+";
-      case "a+::core1":
-        return "A+ — CORE 1";
-      case "a+::core2":
-        return "A+ — CORE 2";
-      case "a+::unassigned":
-        return "A+ — UNASSIGNED CORE";
-      case "unassigned":
-        return "UNASSIGNED COURSE";
-      default:
-        return id.toUpperCase();
+      case "security+": return "SECURITY+";
+      case "a+": return "A+";
+      case "a+::core1": return "A+ — CORE 1";
+      case "a+::core2": return "A+ — CORE 2";
+      case "a+::unassigned": return "A+ — UNASSIGNED CORE";
+      case "unassigned": return "UNASSIGNED COURSE";
+      default: return id.toUpperCase();
     }
   }
 
@@ -433,33 +448,86 @@ function QuizzesPageInner() {
     }
   }
 
-  /* ── Student course code submit ─────────────────────────────────────────── */
+  /* ── Course flows ───────────────────────────────────────────────────────── */
 
-  async function submitPassword() {
+  // First-time set — requires course-specific code; then lock forever
+  async function confirmInitialCourse() {
     if (!pendingCourse || !user) return;
-    setPwSubmitting(true);
+    setInitialSubmitting(true);
     try {
       const expected = COURSE_PASSWORDS[pendingCourse].toLowerCase().trim();
-      const given = pwInput.toLowerCase().trim();
+      const given = courseCodeInput.toLowerCase().trim();
       if (expected !== given) {
-        setPwSubmitting(false);
-        return alert("Incorrect code. Please try again.");
+        setInitialSubmitting(false);
+        return alert("Invalid course code.");
       }
-      await updateDoc(doc(db, "users", user.uid), {
-        courseTag: pendingCourse,
-      });
+
+      await setDoc(
+        doc(db, "users", user.uid),
+        {
+          courseTag: pendingCourse,
+          courseLocked: true,               // lock forever after first set
+          courseSetAt: serverTimestamp(),
+        },
+        { merge: true }
+      );
+
       setStudentCourse(pendingCourse);
-      setShowChooser(false);
-      setPwDialogOpen(false);
+      setShowInitialChooser(false);
+      setPendingCourse(null);
+      setCourseCodeInput("");
+      router.refresh();
     } catch (e) {
       console.error(e);
-      alert("Failed to save your course. Please try again.");
+      alert("Failed to set course. Please try again.");
     } finally {
-      setPwSubmitting(false);
+      setInitialSubmitting(false);
     }
   }
 
-  /* ── Badges & role ─────────────────────────────────────────────────────── */
+  // Admin override re-assign — requires ADMIN_OVERRIDE_CODE only
+  async function confirmReassignCourse() {
+    if (!user || !reassignCourse) return;
+    setReassignSubmitting(true);
+    try {
+      const adminGiven = adminCodeInput.trim();
+      if (adminGiven !== ADMIN_OVERRIDE_CODE) {
+        setReassignSubmitting(false);
+        return alert("Admin code is incorrect.");
+      }
+
+      await setDoc(
+        doc(db, "users", user.uid),
+        {
+          courseTag: reassignCourse,
+          courseLocked: true,               // keep locked
+          courseReassignedAt: serverTimestamp(),
+          courseOverride: true,
+        },
+        { merge: true }
+      );
+
+      setStudentCourse(reassignCourse);
+      setShowReassignPanel(false);
+      setReassignCourse(null);
+      setAdminCodeInput("");
+      router.refresh();
+    } catch (e) {
+      console.error(e);
+      alert("Failed to re-assign course.");
+    } finally {
+      setReassignSubmitting(false);
+    }
+  }
+
+  function openReassignPanel() {
+    // show panel but still require admin code to actually apply
+    setShowReassignPanel(true);
+    setReassignCourse(null);
+    setAdminCodeInput("");
+  }
+
+  /* ── Misc ──────────────────────────────────────────────────────────────── */
 
   function StatusBadge({ quiz }: { quiz: Quiz }) {
     const status =
@@ -478,8 +546,6 @@ function QuizzesPageInner() {
   }
 
   const roleIsAdmin = role === "admin";
-
-  /* ── Admin card actions (3 dots) ───────────────────────────────────────── */
 
   async function handleHide(quizId: string) {
     try {
@@ -515,8 +581,6 @@ function QuizzesPageInner() {
     }
   }
 
-  /* ── Render Helpers ────────────────────────────────────────────────────── */
-
   function AdminQuizCard({ quiz, average }: { quiz: Quiz; average: number | null | undefined }) {
     const isActionLoading = (action: string) => loadingAction === `${action}-${quiz.id}`;
     return (
@@ -525,7 +589,6 @@ function QuizzesPageInner() {
           <div className="flex items-start justify-between gap-2">
             <CardTitle className="flex items-center gap-2">
               <span className="mr-2">{quiz.title}</span>
-              {/* badges group */}
               <span className="inline-flex items-center gap-2 whitespace-nowrap">
                 {(quiz as any).course && (quiz as any).course !== "unassigned" && (
                   <Badge variant="outline" className="whitespace-nowrap">
@@ -655,7 +718,6 @@ function QuizzesPageInner() {
           <div className="flex items-center justify-between">
             <CardTitle className="flex items-center gap-2">
               <span className="mr-2">{quiz.title}</span>
-              {/* badges group */}
               <span className="inline-flex items-center gap-2 whitespace-nowrap">
                 {(quiz as any).course && (quiz as any).course !== "unassigned" && (
                   <Badge variant="outline" className="whitespace-nowrap">
@@ -728,9 +790,8 @@ function QuizzesPageInner() {
 
   return (
     <div className="space-y-6">
-      {/* ======== Batch dashboard ABOVE the header (and Create New Quiz) ======== */}
+      {/* ======== Batch dashboard (admins) ======== */}
       {roleIsAdmin && <BatchGradesDashboard />}
-      {/* ======================================================================= */}
 
       {/* Header */}
       <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
@@ -740,17 +801,37 @@ function QuizzesPageInner() {
             {roleIsAdmin ? "Manage your quizzes here." : "Your course quizzes"}
           </p>
         </div>
-        {roleIsAdmin && (
+        {roleIsAdmin ? (
           <Button asChild className="bg-accent text-accent-foreground hover:bg-accent/90">
             <Link href="/dashboard/quizzes/new">
               <PlusCircle className="mr-2 h-4 w-4" />
               Create New Quiz
             </Link>
           </Button>
+        ) : (
+          <div className="flex items-center gap-2">
+            <Badge variant="outline">
+              Current course:&nbsp;
+              <span className="font-semibold">
+                {studentCourse ? studentCourse.toUpperCase() : "UNASSIGNED"}
+              </span>
+            </Badge>
+
+            {/* Re-assign button visible, but protected by admin code panel */}
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={openReassignPanel}
+              title="Re-assign Course (Admin code required)"
+            >
+              <RefreshCcw className="mr-2 h-4 w-4" />
+              Re-assign
+            </Button>
+          </div>
         )}
       </div>
 
-      {/* ADMIN filter */}
+      {/* Admin filters */}
       {roleIsAdmin && (
         <div className="flex flex-wrap items-center gap-2">
           <Button variant={adminFilter === "all" ? "default" : "outline"} onClick={() => setAdminFilter("all")}>
@@ -771,6 +852,97 @@ function QuizzesPageInner() {
             Hidden
           </Button>
         </div>
+      )}
+
+      {/* ======= Student Initial Chooser (first time only) ======= */}
+      {!roleIsAdmin && showInitialChooser && (
+        <Card>
+          <CardHeader>
+            <CardTitle>Choose your course</CardTitle>
+            <CardDescription>Select your track and enter the course code to lock it.</CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="flex flex-wrap gap-2">
+              <Button
+                variant={pendingCourse === "security+" ? "default" : "outline"}
+                onClick={() => setPendingCourse("security+")}
+              >
+                Security+
+              </Button>
+              <Button
+                variant={pendingCourse === "a+" ? "default" : "outline"}
+                onClick={() => setPendingCourse("a+")}
+              >
+                A+
+              </Button>
+            </div>
+
+            {pendingCourse && (
+              <div className="flex items-center gap-2">
+                <input
+                  value={courseCodeInput}
+                  onChange={(e) => setCourseCodeInput(e.target.value)}
+                  placeholder="Enter course code"
+                  className="w-full rounded-md border px-3 py-2"
+                />
+                <Button onClick={confirmInitialCourse} disabled={initialSubmitting || !courseCodeInput.trim()}>
+                  {initialSubmitting ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+                  Confirm
+                </Button>
+              </div>
+            )}
+          </CardContent>
+        </Card>
+      )}
+
+      {/* ======= Student Re-assign Panel (Admin code required) ======= */}
+      {!roleIsAdmin && showReassignPanel && (
+        <Card>
+          <CardHeader>
+            <CardTitle>Re-assign Course</CardTitle>
+            <CardDescription>
+              Admin authorization required. Enter the admin code, then choose the new course.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            <div className="flex items-center gap-2">
+              <KeyRound className="h-4 w-4" />
+              <input
+                value={adminCodeInput}
+                onChange={(e) => setAdminCodeInput(e.target.value)}
+                placeholder="Admin code"
+                className="w-full rounded-md border px-3 py-2"
+              />
+            </div>
+
+            <div className="flex flex-wrap gap-2">
+              <Button
+                variant={reassignCourse === "security+" ? "default" : "outline"}
+                onClick={() => setReassignCourse("security+")}
+              >
+                Security+
+              </Button>
+              <Button
+                variant={reassignCourse === "a+" ? "default" : "outline"}
+                onClick={() => setReassignCourse("a+")}
+              >
+                A+
+              </Button>
+            </div>
+          </CardContent>
+          <CardFooter className="flex items-center gap-2">
+            <Button
+              onClick={confirmReassignCourse}
+              disabled={reassignSubmitting || !reassignCourse || !adminCodeInput.trim()}
+            >
+              {reassignSubmitting ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+              Apply
+            </Button>
+            <Button variant="outline" onClick={() => setShowReassignPanel(false)}>
+              Cancel
+            </Button>
+          </CardFooter>
+        </Card>
       )}
 
       {/* Content */}
@@ -830,10 +1002,9 @@ function QuizzesPageInner() {
             );
           })()}
         </DragDropContext>
-      ) : showChooser ? null : studentQuizzes.length > 0 ? (
+      ) : !showInitialChooser && studentQuizzes.length > 0 ? (
         (() => {
           if (studentCourse === "a+") {
-            // Students (A+): show core filters
             const allAPlus = studentQuizzes.filter((q) => courseOf(q) === "a+");
             const grouped = groupAPlusByCore(allAPlus);
             const core1List = grouped.core1;
@@ -842,7 +1013,6 @@ function QuizzesPageInner() {
 
             return (
               <div className="space-y-6">
-                {/* Student A+ filter buttons */}
                 <div className="flex flex-wrap items-center gap-2">
                   <Button
                     variant={studentAPlusFilter === "all" ? "default" : "outline"}
@@ -864,7 +1034,6 @@ function QuizzesPageInner() {
                   </Button>
                 </div>
 
-                {/* Panels */}
                 {studentAPlusFilter === "all" && (
                   <div className="space-y-8">
                     <SectionDivider label="A+ — ALL CORES" />
@@ -930,7 +1099,6 @@ function QuizzesPageInner() {
             );
           }
 
-          // Non A+ student: default grid as before
           return (
             <div className="grid gap-6 md:grid-cols-2 xl:grid-cols-3">
               {studentQuizzes.map((quiz) => (
@@ -940,14 +1108,16 @@ function QuizzesPageInner() {
           );
         })()
       ) : (
-        <Card>
-          <CardHeader>
-            <CardTitle>No Quizzes Available</CardTitle>
-            <CardDescription>
-              There are no quizzes for your course yet. Please check back later.
-            </CardDescription>
-          </CardHeader>
-        </Card>
+        !roleIsAdmin && !showInitialChooser && (
+          <Card>
+            <CardHeader>
+              <CardTitle>No Quizzes Available</CardTitle>
+              <CardDescription>
+                There are no quizzes for your course yet. Please check back later.
+              </CardDescription>
+            </CardHeader>
+          </Card>
+        )
       )}
     </div>
   );
