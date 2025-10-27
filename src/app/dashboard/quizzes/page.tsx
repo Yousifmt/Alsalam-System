@@ -100,7 +100,7 @@ const CORE_ORDER: APlusCore[] = ["core1", "core2", "unassigned"];
 const SECTION_ORDER: CourseTag[] = ["security+", "a+", "unassigned"];
 
 const COURSE_PASSWORDS: Record<StudentCourseTag, string> = {
-  "security+": "sy0-701-student-353535",
+  "security+": "sy0-701",
   "a+": "202-1201",
 };
 
