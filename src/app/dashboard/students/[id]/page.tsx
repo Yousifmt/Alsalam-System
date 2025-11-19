@@ -1,5 +1,4 @@
-// FILE: app/(dashboard)/students/[id]/page.tsx  (adjust path to your project)
-// viewing answer functionality
+// FILE: app/(dashboard)/students/[id]/page.tsx
 "use client";
 
 import { useEffect, useState } from "react";
@@ -165,7 +164,12 @@ export default function StudentDetailPage() {
       <div className="text-center">
         <h1 className="text-2xl font-bold">Student Not Found</h1>
         <p>The requested student could not be found.</p>
-        <Button asChild variant="link" className="mt-4" onClick={handleBackClick}>
+        <Button
+          asChild
+          variant="link"
+          className="mt-4"
+          onClick={handleBackClick}
+        >
           <Link href="/dashboard">
             <ArrowLeft className="mr-2 h-4 w-4" />
             Back to Dashboard
@@ -183,27 +187,44 @@ export default function StudentDetailPage() {
   return (
     <div className="space-y-8">
       <div>
-        <div className="flex justify-between items-start mb-4">
-          <Button asChild variant="outline" size="sm">
+        {/* HEADER: responsive layout for mobile to avoid horizontal scroll */}
+        <div className="flex flex-col gap-3 mb-4 sm:flex-row sm:items-start sm:justify-between">
+          <Button
+            asChild
+            variant="outline"
+            size="sm"
+            className="w-full sm:w-auto"
+          >
             <Link href="/dashboard" onClick={handleBackClick}>
               <ArrowLeft className="mr-2 h-4 w-4" />
               Back to All Students
             </Link>
           </Button>
-          <div className="flex gap-2">
-            <Button asChild variant="outline">
+
+          <div className="flex flex-col w-full gap-2 sm:w-auto sm:flex-row sm:flex-wrap sm:justify-end">
+            <Button
+              asChild
+              variant="outline"
+              className="w-full sm:w-auto"
+            >
               <Link href={`/dashboard/students/${id}/evaluations`}>
                 <List className="mr-2 h-4 w-4" />
                 View Evaluations
               </Link>
             </Button>
-            <Button asChild>
+            <Button
+              asChild
+              className="w-full sm:w-auto"
+            >
               <Link href={`/dashboard/students/${id}/evaluation`}>
                 <FilePen className="mr-2 h-4 w-4" />
                 New Daily Evaluation
               </Link>
             </Button>
-            <Button asChild>
+            <Button
+              asChild
+              className="w-full sm:w-auto"
+            >
               <Link href={`/dashboard/students/${id}/final-evaluation`}>
                 <ShieldCheck className="mr-2 h-4 w-4" />
                 New Final Evaluation
@@ -211,8 +232,9 @@ export default function StudentDetailPage() {
             </Button>
           </div>
         </div>
-        <h1 className="text-3xl font-bold font-headline">{student.name}</h1>
-        <p className="text-muted-foreground">{student.email}</p>
+
+        <h1 className="text-3xl font-bold font-headline break-words">{student.name}</h1>
+        <p className="text-muted-foreground break-words">{student.email}</p>
       </div>
 
       {/* Summary KPIs: same-size, left-aligned boxes */}
@@ -264,7 +286,9 @@ export default function StudentDetailPage() {
                   </p>
                 </>
               ) : (
-                <div className="text-muted-foreground py-8">No attempts yet to compute an average.</div>
+                <div className="text-muted-foreground py-8">
+                  No attempts yet to compute an average.
+                </div>
               )}
             </CardContent>
           </Card>
@@ -282,8 +306,8 @@ export default function StudentDetailPage() {
             {quizzes.map((quiz) => (
               <Card key={quiz.id}>
                 <CardHeader>
-                  <CardTitle>{quiz.title}</CardTitle>
-                  <CardDescription>{quiz.description}</CardDescription>
+                  <CardTitle className="break-words">{quiz.title}</CardTitle>
+                  <CardDescription className="break-words">{quiz.description}</CardDescription>
                 </CardHeader>
                 <CardContent>
                   <Accordion type="single" collapsible className="w-full">
@@ -305,8 +329,8 @@ export default function StudentDetailPage() {
                                 className="bg-secondary rounded-lg px-4 border-b-0"
                               >
                                 <AccordionTrigger className="py-3 hover:no-underline">
-                                  <div className="flex justify-between items-center w-full">
-                                    <div className="font-medium">
+                                  <div className="flex flex-col gap-1 w-full sm:flex-row sm:items-center sm:justify-between">
+                                    <div className="font-medium text-left">
                                       Attempt {quiz.results!.length - index}
                                       <span className="ml-2 text-sm text-muted-foreground">
                                         ({new Date(result.date).toLocaleString()})
@@ -338,14 +362,14 @@ export default function StudentDetailPage() {
                                             : "border-red-500 bg-red-500/10"
                                         }`}
                                       >
-                                        <div className="flex items-start justify-between">
+                                        <div className="flex items-start justify-between gap-2">
                                           <p className="font-semibold whitespace-pre-wrap break-words">
                                             {qIndex + 1}. {item.question}
                                           </p>
                                           {item.isCorrect ? (
-                                            <CheckCircle className="h-5 w-5 text-green-500 flex-shrink-0 ml-2" />
+                                            <CheckCircle className="h-5 w-5 text-green-500 flex-shrink-0" />
                                           ) : (
-                                            <XCircle className="h-5 w-5 text-red-500 flex-shrink-0 ml-2" />
+                                            <XCircle className="h-5 w-5 text-red-500 flex-shrink-0" />
                                           )}
                                         </div>
                                         <div className="mt-2 text-sm space-y-1">
