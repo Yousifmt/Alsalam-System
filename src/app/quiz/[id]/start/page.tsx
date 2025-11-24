@@ -1,7 +1,7 @@
 // FILE: src/app/quiz/[id]/start/page.tsx
 // Purpose: Create/Reset the student's session *before* navigating to the runner.
 // This prevents the "start → bounce back" behavior on newly created/assigned quizzes.
-
+//
 "use client";
 
 import { useEffect, useState } from "react";
@@ -303,30 +303,50 @@ export default function StartQuizPage() {
                   <ShieldCheck className="h-12 w-12 text-primary mb-4" />
                   <h3 className="text-lg font-semibold">Normal Mode</h3>
                   <p className="text-muted-foreground text-sm mt-1 mb-4">
-  Your score will be recorded and will count toward your grade. This mode also uses an
-  anti-cheating system: you must stay in Full Screen, and if you switch tabs, minimize,
-  or leave this page, the quiz will be locked for 60 seconds when you return.
-</p>
+                    Your score will be recorded and will count toward your grade. This mode also uses an
+                    anti-cheating system: you must stay in Full Screen, and if you switch tabs, minimize,
+                    or leave this page, the quiz will be locked for 60 seconds when you return.
+                  </p>
 
                   {normalModeButtons()}
                 </div>
               </div>
 
-              <Link href={`/quiz/${id}?mode=practice`} className="group">
-                <div className="p-6 border rounded-lg h-full flex flex-col items-center text-center hover:border-accent hover:bg-accent/5 transition-all">
-                  <Beaker className="h-12 w-12 text-accent mb-4" />
-                  <h3 className="text-lg font-semibold">Practice Mode</h3>
-                  <p className="text-muted-foreground text-sm mt-1 mb-4">
-                    Take the quiz for practice. Your results will not affect your grade.
-                  </p>
-                  <Button
-                    className="mt-auto w-full bg-accent/10 text-accent border-accent/20 group-hover:bg-accent group-hover:text-accent-foreground"
-                    variant="outline"
-                  >
-                    Start Practice <ArrowRight className="ml-2 h-4 w-4" />
-                  </Button>
+              {/* Practice mode card — locked or normal based on quiz.practiceModeLocked */}
+              {quiz.practiceModeLocked ? (
+                <div className="group opacity-60 cursor-not-allowed">
+                  <div className="p-6 border rounded-lg h-full flex flex-col items-center text-center bg-muted/30">
+                    <Beaker className="h-12 w-12 text-accent mb-4" />
+                    <h3 className="text-lg font-semibold">Practice Mode</h3>
+                    <p className="text-muted-foreground text-sm mt-1 mb-4">
+                      Practice mode is locked for this quiz. Please use Normal Mode to take this exam.
+                    </p>
+                    <Button
+                      className="mt-auto w-full"
+                      variant="outline"
+                      disabled
+                    >
+                      Practice Mode Locked
+                    </Button>
+                  </div>
                 </div>
-              </Link>
+              ) : (
+                <Link href={`/quiz/${id}?mode=practice`} className="group">
+                  <div className="p-6 border rounded-lg h-full flex flex-col items-center text-center hover:border-accent hover:bg-accent/5 transition-all">
+                    <Beaker className="h-12 w-12 text-accent mb-4" />
+                    <h3 className="text-lg font-semibold">Practice Mode</h3>
+                    <p className="text-muted-foreground text-sm mt-1 mb-4">
+                      Take the quiz for practice. Your results will not affect your grade.
+                    </p>
+                    <Button
+                      className="mt-auto w-full bg-accent/10 text-accent border-accent/20 group-hover:bg-accent group-hover:text-accent-foreground"
+                      variant="outline"
+                    >
+                      Start Practice <ArrowRight className="ml-2 h-4 w-4" />
+                    </Button>
+                  </div>
+                </Link>
+              )}
             </div>
           </CardContent>
 

@@ -80,6 +80,7 @@ export interface Quiz {
   order?: number; // for manual ordering
   course?: CourseTag; // ← NEW: assignment to course (default 'unassigned')
   hidden?: boolean;   // NEW: hide from students; visible only in Admin > Hidden
+  practiceModeLocked?: boolean;
 
 }
 

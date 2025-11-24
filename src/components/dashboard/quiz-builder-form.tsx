@@ -1,4 +1,5 @@
 // FILE: src/components/dashboard/quiz-builder-form.tsx
+//
 "use client";
 
 import React, { useState, useEffect } from "react";
@@ -244,6 +245,9 @@ export function QuizBuilderForm({ quiz }: { quiz?: Quiz }) {
   // NEW: A+ core (lazy init; safe even if quiz has no 'core')
   const [aPlusCore, setAPlusCore] = useState<APlusCoreTag>(() => (((quiz as any)?.core ?? DEFAULT_CORE) as APlusCoreTag));
 
+  // NEW: practice mode lock (lazy init from quiz)
+  const [practiceModeLocked, setPracticeModeLocked] = useState<boolean>(() => quiz?.practiceModeLocked ?? false);
+
   // Bulk-paste feedback
   const [lastImportCount, setLastImportCount] = useState<number | null>(null);
 
@@ -272,6 +276,7 @@ export function QuizBuilderForm({ quiz }: { quiz?: Quiz }) {
     setShuffleAnswers(quiz.shuffleAnswers);
     // (Do not touch scoring/course here; they are initialized lazily above)
     // aPlusCore already initialized lazily as well
+    setPracticeModeLocked(quiz.practiceModeLocked ?? false);
   }, [quiz, isEditMode]);
 
   // Reset A+ core to unassigned if course switched away from A+
@@ -475,6 +480,7 @@ export function QuizBuilderForm({ quiz }: { quiz?: Quiz }) {
       results: quiz?.results ?? [],
       scoring,
       course,
+      practiceModeLocked,
       ...(timeLimit > 0 ? { timeLimit } : {}), // omit if 0/falsey
       ...(course === "a+" ? { core: aPlusCore } : {}), // include ONLY for A+
     };
@@ -511,6 +517,7 @@ export function QuizBuilderForm({ quiz }: { quiz?: Quiz }) {
       results: quiz?.results ?? [],
       scoring,
       course,
+      practiceModeLocked,
       core: course === "a+" ? aPlusCore : undefined, // ← NEW
     };
     return payload;
@@ -546,7 +553,7 @@ export function QuizBuilderForm({ quiz }: { quiz?: Quiz }) {
       autoSaveDraft();
     }, 1200);
     return () => clearTimeout(t);
-  }, [title, description, questions, timeLimit, shuffleQuestions, shuffleAnswers, scoring, course, aPlusCore]); // ← added aPlusCore
+  }, [title, description, questions, timeLimit, shuffleQuestions, shuffleAnswers, scoring, course, aPlusCore, practiceModeLocked]); // ← added practiceModeLocked
 
   /* --------------------------------- Save / Archive ---------------------------------- */
 
@@ -727,6 +734,21 @@ export function QuizBuilderForm({ quiz }: { quiz?: Quiz }) {
           <div className="flex items-center space-x-2">
             <Switch id="shuffle-answers" checked={shuffleAnswers} onCheckedChange={setShuffleAnswers} />
             <Label htmlFor="shuffle-answers">Shuffle Answer Options</Label>
+          </div>
+        </div>
+
+        {/* NEW: practice mode lock toggle */}
+        <div className="flex items-start space-x-2">
+          <Switch
+            id="practice-mode-locked"
+            checked={practiceModeLocked}
+            onCheckedChange={setPracticeModeLocked}
+          />
+          <div className="space-y-0.5">
+            <Label htmlFor="practice-mode-locked">Lock Practice Mode</Label>
+            <p className="text-xs text-muted-foreground">
+              When enabled, students cannot start this quiz in practice mode. Useful for mock exams.
+            </p>
           </div>
         </div>
 
