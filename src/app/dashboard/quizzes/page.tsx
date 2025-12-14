@@ -1,16 +1,10 @@
 // FILE: src/app/dashboard/quizzes/page.tsx
 "use client";
 
-import React, {
-  Suspense,
-  useEffect,
-  useMemo,
-  useState,
-  type ReactNode,
-} from "react";
+import React, { Suspense, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
-import { doc, getDoc, setDoc, updateDoc, serverTimestamp } from "firebase/firestore";
+import { doc, getDoc, setDoc, serverTimestamp } from "firebase/firestore";
 import { db } from "@/lib/firebase";
 import { useAuth } from "@/context/auth-context";
 
@@ -45,6 +39,8 @@ import {
   Trash2,
   RefreshCcw,
   KeyRound,
+  Archive,
+  ArchiveRestore,
 } from "lucide-react";
 
 import dynamicImport from "next/dynamic";
@@ -67,25 +63,12 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 
-// ✅ helpers
-import {
-  groupByCourseTag as groupByCourseSafe,
-  normalizeQuizCourse,
-} from "@/utils/quizzes";
+import { groupByCourseTag as groupByCourseSafe, normalizeQuizCourse } from "@/utils/quizzes";
 
 /* DnD lazy imports */
-const DragDropContext = dynamicImport(
-  () => import("@hello-pangea/dnd").then((m) => m.DragDropContext),
-  { ssr: false },
-);
-const Droppable = dynamicImport(
-  () => import("@hello-pangea/dnd").then((m) => m.Droppable),
-  { ssr: false },
-);
-const Draggable = dynamicImport(
-  () => import("@hello-pangea/dnd").then((m) => m.Draggable),
-  { ssr: false },
-);
+const DragDropContext = dynamicImport(() => import("@hello-pangea/dnd").then((m) => m.DragDropContext), { ssr: false });
+const Droppable = dynamicImport(() => import("@hello-pangea/dnd").then((m) => m.Droppable), { ssr: false });
+const Draggable = dynamicImport(() => import("@hello-pangea/dnd").then((m) => m.Draggable), { ssr: false });
 
 /* ────────────────────────────────────────────────────────────────
    Types / constants
@@ -94,18 +77,16 @@ type CourseTag = "security+" | "a+" | "unassigned";
 type StudentCourseTag = "security+" | "a+";
 type AdminFilter = "all" | "security+" | "a+" | "hidden";
 
-// A+ core sub-tag (for quizzes whose course === "a+")
 type APlusCore = "core1" | "core2" | "unassigned";
 const CORE_ORDER: APlusCore[] = ["core1", "core2", "unassigned"];
-const SECTION_ORDER: CourseTag[] = ["security+", "a+", "unassigned"];
 
 const COURSE_PASSWORDS: Record<StudentCourseTag, string> = {
   "security+": "sy0-701",
   "a+": "202-1201",
 };
 
-// 🔐 Admin override code for RE-ASSIGN only
 const ADMIN_OVERRIDE_CODE = "353535";
+const AVG_CONCURRENCY = 6;
 
 /* ────────────────────────────────────────────────────────────────
    Utils
@@ -134,20 +115,39 @@ const isArchived = (q: any) => {
     .toString()
     .trim()
     .toLowerCase();
-  return (
-    s === "archived" ||
-    s === "archive" ||
-    q?.isArchived === true ||
-    q?.deleted === true
-  );
+  return s === "archived" || s === "archive" || q?.isArchived === true || q?.deleted === true;
 };
 const isHidden = (q: any) => q?.hidden === true;
 
-// after normalization, these are always safe
-const courseOf = (q: any): CourseTag =>
-  (q?.course as CourseTag) ?? "unassigned";
-const coreOf = (q: any): APlusCore =>
-  (q?.core as APlusCore) ?? "unassigned";
+const courseOf = (q: any): CourseTag => (q?.course as CourseTag) ?? "unassigned";
+const coreOf = (q: any): APlusCore => (q?.core as APlusCore) ?? "unassigned";
+
+function computeAverage(results: any[]) {
+  if (!results?.length) return null;
+  const avg = results.reduce((acc, r) => acc + (r.score / r.total) * 100, 0) / results.length;
+  return Math.round(avg);
+}
+
+async function mapWithConcurrency<T, R>(
+  items: T[],
+  limit: number,
+  fn: (item: T, index: number) => Promise<R>,
+): Promise<R[]> {
+  const out: R[] = new Array(items.length);
+  let nextIndex = 0;
+
+  async function worker() {
+    while (true) {
+      const i = nextIndex++;
+      if (i >= items.length) return;
+      out[i] = await fn(items[i], i);
+    }
+  }
+
+  const workers = Array.from({ length: Math.max(1, Math.min(limit, items.length)) }, () => worker());
+  await Promise.all(workers);
+  return out;
+}
 
 /* ────────────────────────────────────────────────────────────────
    Skeletons & layout helpers
@@ -170,9 +170,7 @@ function QuizCardSkeleton() {
 }
 
 function Grid({ children }: { children: ReactNode }) {
-  return (
-    <div className="grid gap-6 md:grid-cols-2 xl:grid-cols-3">{children}</div>
-  );
+  return <div className="grid gap-6 md:grid-cols-2 xl:grid-cols-3">{children}</div>;
 }
 
 function SectionDivider({ label }: { label: string }) {
@@ -223,91 +221,114 @@ export default function QuizzesClient() {
 ──────────────────────────────────────────────────────────────── */
 function QuizzesPageInner() {
   const router = useRouter();
-  const params = useSearchParams();
+  const searchParams = useSearchParams();
+
+  // ✅ IMPORTANT: depend on primitive value, NOT the params object
+  const choose = searchParams.get("choose") === "1";
+
   const { role, user } = useAuth();
+  const roleIsAdmin = role === "admin";
+  const roleReady = role === "admin" || role === "student";
+  const userId = user?.uid ?? null;
 
   const [quizzes, setQuizzes] = useState<Quiz[]>([]);
   const [loading, setLoading] = useState(true);
-  const [loadingAction, setLoadingAction] = useState<string | null>(null);
+
+  // averages (admin) computed in background
   const [averageScores, setAverageScores] = useState<Record<string, number | null>>({});
+  const [adminAveragesLoading, setAdminAveragesLoading] = useState(false);
+
+  const [loadingAction, setLoadingAction] = useState<string | null>(null);
   const [savingOrder, setSavingOrder] = useState(false);
   const [beforeDnD, setBeforeDnD] = useState<Quiz[] | null>(null);
 
   // STUDENT: state
   const [studentCourse, setStudentCourse] = useState<StudentCourseTag | null>(null);
 
-  // Initial choose (first time only)
+  // Initial choose
   const [showInitialChooser, setShowInitialChooser] = useState(false);
   const [pendingCourse, setPendingCourse] = useState<StudentCourseTag | null>(null);
   const [courseCodeInput, setCourseCodeInput] = useState("");
   const [initialSubmitting, setInitialSubmitting] = useState(false);
 
-  // Re-assign (admin override only)
+  // Re-assign
   const [showReassignPanel, setShowReassignPanel] = useState(false);
   const [adminCodeInput, setAdminCodeInput] = useState("");
   const [reassignCourse, setReassignCourse] = useState<StudentCourseTag | null>(null);
   const [reassignSubmitting, setReassignSubmitting] = useState(false);
 
-  // ADMIN: filter
+  // ADMIN filter
   const [adminFilter, setAdminFilter] = useState<AdminFilter>("all");
 
-  // STUDENT (A+): core filter buttons
+  // STUDENT A+ filter
   type StudentAPlusFilter = "all" | "core1" | "core2";
   const [studentAPlusFilter, setStudentAPlusFilter] = useState<StudentAPlusFilter>("all");
 
-  const roleReady = role === "admin" || role === "student";
+  // cancel token for background jobs
+  const avgJobId = useRef(0);
+
+  // ✅ only reacts to boolean choose (not params object)
+  useEffect(() => {
+    if (choose) setShowInitialChooser(true);
+  }, [choose]);
 
   useEffect(() => {
-    if (params.get("choose") === "1") setShowInitialChooser(true);
-  }, [params]);
+    if (!roleReady || !userId) return;
 
-  useEffect(() => {
     const run = async () => {
-      if (!roleReady || !user) return;
       setLoading(true);
       try {
-        const fetched = role === "admin" ? await getQuizzes() : await getQuizzesForUser(user.uid);
-
-        // normalize quizzes
+        const fetched = roleIsAdmin ? await getQuizzes() : await getQuizzesForUser(userId);
         const normalized = (fetched ?? []).map(normalizeQuizCourse);
         setQuizzes(normalized);
 
-        if (role === "admin") {
-          const scores: Record<string, number | null> = {};
-          for (const q of normalized) {
-            const results = await getAllResultsForQuiz(q.id);
-            scores[q.id] = results.length
-              ? Math.round(
-                  results.reduce((acc, r) => acc + (r.score / r.total) * 100, 0) / results.length,
-                )
-              : null;
-          }
-          setAverageScores(scores);
+        if (roleIsAdmin) {
+          // background averages
+          const myJob = ++avgJobId.current;
+          setAdminAveragesLoading(true);
+
+          void (async () => {
+            try {
+              const list = normalized; // compute for all (or you can filter to visible only)
+              const pairs = await mapWithConcurrency(
+                list,
+                AVG_CONCURRENCY,
+                async (q) => {
+                  const results = await getAllResultsForQuiz(q.id);
+                  return { id: q.id, avg: computeAverage(results) as number | null };
+                },
+              );
+
+              if (avgJobId.current !== myJob) return;
+
+              const next: Record<string, number | null> = {};
+              for (const p of pairs) next[p.id] = p.avg;
+              setAverageScores(next);
+            } catch (e) {
+              console.error("Failed to compute averages:", e);
+            } finally {
+              if (avgJobId.current === myJob) setAdminAveragesLoading(false);
+            }
+          })();
         } else {
-          // student: read course + lock
-          const snap = await getDoc(doc(db, "users", user.uid));
+          // student course
+          const snap = await getDoc(doc(db, "users", userId));
           const data: any = snap.exists() ? snap.data() : {};
           const current = normalizeStudentCourseTag(data.courseTag);
           const locked = !!data.courseLocked;
 
           if (current) {
             setStudentCourse(current);
-            setShowInitialChooser(false); // course already set = locked unless admin override
+            setShowInitialChooser(false);
           } else {
-            // not set yet -> force initial chooser
             setStudentCourse(null);
             setShowInitialChooser(true);
           }
 
-          // If manually forced choose via query, ignore lock (first set only)
-          if (!current && params.get("choose") === "1") {
-            setShowInitialChooser(true);
-          }
+          // if forced choose, only matters when no course set
+          if (!current && choose) setShowInitialChooser(true);
 
-          // Safety: if locked, prevent initial chooser
-          if (locked && current) {
-            setShowInitialChooser(false);
-          }
+          if (locked && current) setShowInitialChooser(false);
         }
       } catch (e) {
         console.error(e);
@@ -315,15 +336,19 @@ function QuizzesPageInner() {
         setLoading(false);
       }
     };
-    run();
-  }, [roleReady, role, user, params]);
 
-  /* ── Filters: Admin + Student ───────────────────────────────────────────── */
+    run();
+
+    // cancel background averages when rerun/unmount
+    return () => {
+      avgJobId.current += 1;
+    };
+  }, [roleReady, roleIsAdmin, userId, choose]);
+
+  /* ── Filters ─────────────────────────────────────────────── */
 
   const adminQuizzes = useMemo(() => {
-    if (adminFilter === "hidden") {
-      return quizzes.filter((q) => isHidden(q));
-    }
+    if (adminFilter === "hidden") return quizzes.filter((q) => isHidden(q));
     const base = quizzes.filter((q) => !isHidden(q));
     if (adminFilter === "all") return base;
     return base.filter((q) => courseOf(q) === (adminFilter as CourseTag));
@@ -331,32 +356,37 @@ function QuizzesPageInner() {
 
   const studentQuizzes = useMemo(() => {
     const base = quizzes.filter((q) => !isArchived(q) && !isHidden(q));
+    let filtered: Quiz[];
+
     if (!studentCourse) {
-      // show only unassigned until first set
-      return base.filter((q) => courseOf(q) === "unassigned");
+      filtered = base.filter((q) => courseOf(q) === "unassigned");
+    } else {
+      filtered = base.filter((q) => {
+        const c: CourseTag = courseOf(q);
+        return c === "unassigned" || c === studentCourse;
+      });
     }
-    return base.filter((q) => {
-      const c: CourseTag = courseOf(q);
-      return c === "unassigned" || c === studentCourse;
-    });
+
+    return sortQuizzes(filtered);
   }, [quizzes, studentCourse]);
 
-  /* ── Sorting & Grouping ─────────────────────────────────────────────────── */
+  /* ── Sorting & Grouping ───────────────────────────────────── */
 
-  const sortQuizzes = (arr: Quiz[]) =>
-    [...arr].sort((a: any, b: any) => {
-      const ao = typeof (a as any).order === "number" ? (a as any).order : 1e9;
-      const bo = typeof (b as any).order === "number" ? (b as any).order : 1e9;
+  function sortQuizzes(arr: Quiz[]): Quiz[] {
+    return [...arr].sort((a: any, b: any) => {
+      const ao = typeof a?.order === "number" ? a.order : -1;
+      const bo = typeof b?.order === "number" ? b.order : -1;
       if (ao !== bo) return ao - bo;
       return (a.title || "").localeCompare(b.title || "");
     });
+  }
 
-  function groupByCourseTagSafe(arr: Quiz[]): Record<CourseTag, Quiz[]> {
+  function groupByCourseTagSafeWrapper(arr: Quiz[]): Record<CourseTag, Quiz[]> {
     const grouped = groupByCourseSafe(arr);
     return {
       "security+": sortQuizzes(grouped["security+"]),
       "a+": sortQuizzes(grouped["a+"]),
-      "unassigned": sortQuizzes(grouped["unassigned"]),
+      unassigned: sortQuizzes(grouped["unassigned"]),
     };
   }
 
@@ -367,43 +397,29 @@ function QuizzesPageInner() {
     return groups;
   }
 
-  /* ── DnD (admin) ───────────────────────────────────────────────────────── */
+  /* ── DnD (admin) ─────────────────────────────────────────── */
 
   function buildAdminDroppableMap(list: Quiz[]): Record<string, Quiz[]> {
-    const byCourse = groupByCourseTagSafe(list);
-    const map: Record<string, Quiz[]> = {};
-    map["security+"] = byCourse["security+"];
-
-    if (adminFilter === "a+") {
-      const aplus = groupAPlusByCore(byCourse["a+"]);
-      map["a+::core1"] = aplus.core1;
-      map["a+::core2"] = aplus.core2;
-      map["a+::unassigned"] = aplus.unassigned;
-    } else {
-      map["a+"] = byCourse["a+"];
-    }
-
-    map["unassigned"] = byCourse["unassigned"];
-    return map;
+    const byCourse = groupByCourseTagSafeWrapper(list);
+    return {
+      "security+": byCourse["security+"],
+      "a+": byCourse["a+"],
+      unassigned: byCourse["unassigned"],
+    };
   }
 
   function droppableOrderForAdmin(): string[] {
-    if (adminFilter === "a+") return ["a+::core1", "a+::core2", "a+::unassigned"];
     if (adminFilter === "security+") return ["security+"];
+    if (adminFilter === "a+") return ["a+"];
     if (adminFilter === "hidden") return ["security+", "a+", "unassigned"];
     return ["security+", "a+", "unassigned"];
   }
 
   function labelForDroppable(id: string): string {
-    switch (id) {
-      case "security+": return "SECURITY+";
-      case "a+": return "A+";
-      case "a+::core1": return "A+ — CORE 1";
-      case "a+::core2": return "A+ — CORE 2";
-      case "a+::unassigned": return "A+ — UNASSIGNED CORE";
-      case "unassigned": return "UNASSIGNED COURSE";
-      default: return id.toUpperCase();
-    }
+    if (id === "security+") return "SECURITY+";
+    if (id === "a+") return "A+";
+    if (id === "unassigned") return "UNASSIGNED COURSE";
+    return id.toUpperCase();
   }
 
   async function onDragEnd(result: DropResult) {
@@ -421,7 +437,6 @@ function QuizzesPageInner() {
 
     const order = droppableOrderForAdmin();
     const visibleCombined = order.flatMap((id) => map[id] ?? []);
-
     const visibleIds = new Set(visibleCombined.map((q) => q.id));
     const others = quizzes.filter((q) => !visibleIds.has(q.id));
     const next = [...visibleCombined, ...others];
@@ -448,11 +463,10 @@ function QuizzesPageInner() {
     }
   }
 
-  /* ── Course flows ───────────────────────────────────────────────────────── */
+  /* ── Course flows ─────────────────────────────────────────── */
 
-  // First-time set — requires course-specific code; then lock forever
   async function confirmInitialCourse() {
-    if (!pendingCourse || !user) return;
+    if (!pendingCourse || !userId) return;
     setInitialSubmitting(true);
     try {
       const expected = COURSE_PASSWORDS[pendingCourse].toLowerCase().trim();
@@ -463,13 +477,13 @@ function QuizzesPageInner() {
       }
 
       await setDoc(
-        doc(db, "users", user.uid),
+        doc(db, "users", userId),
         {
           courseTag: pendingCourse,
-          courseLocked: true,               // lock forever after first set
+          courseLocked: true,
           courseSetAt: serverTimestamp(),
         },
-        { merge: true }
+        { merge: true },
       );
 
       setStudentCourse(pendingCourse);
@@ -485,26 +499,24 @@ function QuizzesPageInner() {
     }
   }
 
-  // Admin override re-assign — requires ADMIN_OVERRIDE_CODE only
   async function confirmReassignCourse() {
-    if (!user || !reassignCourse) return;
+    if (!userId || !reassignCourse) return;
     setReassignSubmitting(true);
     try {
-      const adminGiven = adminCodeInput.trim();
-      if (adminGiven !== ADMIN_OVERRIDE_CODE) {
+      if (adminCodeInput.trim() !== ADMIN_OVERRIDE_CODE) {
         setReassignSubmitting(false);
         return alert("Admin code is incorrect.");
       }
 
       await setDoc(
-        doc(db, "users", user.uid),
+        doc(db, "users", userId),
         {
           courseTag: reassignCourse,
-          courseLocked: true,               // keep locked
+          courseLocked: true,
           courseReassignedAt: serverTimestamp(),
           courseOverride: true,
         },
-        { merge: true }
+        { merge: true },
       );
 
       setStudentCourse(reassignCourse);
@@ -521,13 +533,12 @@ function QuizzesPageInner() {
   }
 
   function openReassignPanel() {
-    // show panel but still require admin code to actually apply
     setShowReassignPanel(true);
     setReassignCourse(null);
     setAdminCodeInput("");
   }
 
-  /* ── Misc ──────────────────────────────────────────────────────────────── */
+  /* ── Actions ──────────────────────────────────────────────── */
 
   function StatusBadge({ quiz }: { quiz: Quiz }) {
     const status =
@@ -538,6 +549,7 @@ function QuizzesPageInner() {
         : (quiz as any).status === "Not Started"
         ? "Not Submitted"
         : (quiz as any).status;
+
     return (
       <Badge variant={getBadgeVariant(status)} className="whitespace-nowrap shrink-0">
         {status}
@@ -545,15 +557,15 @@ function QuizzesPageInner() {
     );
   }
 
-  const roleIsAdmin = role === "admin";
-
   async function handleHide(quizId: string) {
     try {
       setLoadingAction(`hide-${quizId}`);
       await updateQuizFields(quizId, { hidden: true });
     } finally {
       setQuizzes((prev) =>
-        prev.map((q) => (q.id === quizId ? (normalizeQuizCourse({ ...q, hidden: true } as any) as any) : q)),
+        prev.map((q) =>
+          q.id === quizId ? (normalizeQuizCourse({ ...q, hidden: true } as any) as any) : q,
+        ),
       );
       setLoadingAction(null);
     }
@@ -565,7 +577,9 @@ function QuizzesPageInner() {
       await updateQuizFields(quizId, { hidden: false });
     } finally {
       setQuizzes((prev) =>
-        prev.map((q) => (q.id === quizId ? (normalizeQuizCourse({ ...q, hidden: false } as any) as any) : q)),
+        prev.map((q) =>
+          q.id === quizId ? (normalizeQuizCourse({ ...q, hidden: false } as any) as any) : q,
+        ),
       );
       setLoadingAction(null);
     }
@@ -581,8 +595,42 @@ function QuizzesPageInner() {
     }
   }
 
+  async function handleArchive(quizId: string) {
+    try {
+      setLoadingAction(`archive-${quizId}`);
+      await updateQuizFields(quizId, { status: "Archived", archived: true } as any);
+    } finally {
+      setQuizzes((prev) =>
+        prev.map((q) =>
+          q.id === quizId
+            ? (normalizeQuizCourse({ ...q, status: "Archived", archived: true } as any) as any)
+            : q,
+        ),
+      );
+      setLoadingAction(null);
+    }
+  }
+
+  async function handleUnarchive(quizId: string) {
+    try {
+      setLoadingAction(`unarchive-${quizId}`);
+      await updateQuizFields(quizId, { status: "Not Started", archived: false } as any);
+    } finally {
+      setQuizzes((prev) =>
+        prev.map((q) =>
+          q.id === quizId
+            ? (normalizeQuizCourse({ ...q, status: "Not Started", archived: false } as any) as any)
+            : q,
+        ),
+      );
+      setLoadingAction(null);
+    }
+  }
+
   function AdminQuizCard({ quiz, average }: { quiz: Quiz; average: number | null | undefined }) {
     const isActionLoading = (action: string) => loadingAction === `${action}-${quiz.id}`;
+    const archived = isArchived(quiz);
+
     return (
       <Card className="flex flex-col">
         <CardHeader>
@@ -595,12 +643,7 @@ function QuizzesPageInner() {
                     {String((quiz as any).course).toUpperCase()}
                   </Badge>
                 )}
-                {courseOf(quiz) === "a+" && (
-                  <Badge variant="outline" className="whitespace-nowrap">
-                    {String(coreOf(quiz)).replace("core", "Core ").toUpperCase()}
-                  </Badge>
-                )}
-                {isArchived(quiz) && (
+                {archived && (
                   <Badge variant={getBadgeVariant("Archived")} className="whitespace-nowrap">
                     Archived
                   </Badge>
@@ -613,49 +656,58 @@ function QuizzesPageInner() {
               </span>
             </CardTitle>
 
-            <div className="flex items-center gap-1">
-              <DropdownMenu>
-                <DropdownMenuTrigger asChild>
-                  <button
-                    className="inline-flex items-center justify-center rounded-md p-1 text-muted-foreground hover:text-foreground hover:bg-muted/50 transition"
-                    aria-label="More actions"
-                    title="More actions"
-                  >
-                    {loadingAction?.endsWith(quiz.id) ? (
-                      <Loader2 className="h-4 w-4 animate-spin" />
-                    ) : (
-                      <MoreVertical className="h-4 w-4" />
-                    )}
-                  </button>
-                </DropdownMenuTrigger>
-                <DropdownMenuContent align="end" side="bottom">
-                  {isHidden(quiz) ? (
-                    <>
-                      <DropdownMenuItem onClick={() => handleUnhide(quiz.id)} className="cursor-pointer">
-                        <Eye className="mr-2 h-4 w-4" />
-                        Unhide
-                      </DropdownMenuItem>
-                      <DropdownMenuItem
-                        onClick={() => {
-                          if (confirm("Delete this hidden quiz? This cannot be undone.")) {
-                            handleDelete(quiz.id);
-                          }
-                        }}
-                        className="cursor-pointer text-red-600 focus:text-red-700"
-                      >
-                        <Trash2 className="mr-2 h-4 w-4" />
-                        Delete
-                      </DropdownMenuItem>
-                    </>
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <button
+                  className="inline-flex items-center justify-center rounded-md p-1 text-muted-foreground hover:text-foreground hover:bg-muted/50 transition"
+                  aria-label="More actions"
+                  title="More actions"
+                >
+                  {loadingAction?.endsWith(quiz.id) ? (
+                    <Loader2 className="h-4 w-4 animate-spin" />
                   ) : (
-                    <DropdownMenuItem onClick={() => handleHide(quiz.id)} className="cursor-pointer">
-                      <EyeOff className="mr-2 h-4 w-4" />
-                      Hide
-                    </DropdownMenuItem>
+                    <MoreVertical className="h-4 w-4" />
                   )}
-                </DropdownMenuContent>
-              </DropdownMenu>
-            </div>
+                </button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" side="bottom">
+                {archived ? (
+                  <DropdownMenuItem onClick={() => handleUnarchive(quiz.id)} className="cursor-pointer">
+                    <ArchiveRestore className="mr-2 h-4 w-4" />
+                    Unarchive
+                  </DropdownMenuItem>
+                ) : (
+                  <DropdownMenuItem onClick={() => handleArchive(quiz.id)} className="cursor-pointer">
+                    <Archive className="mr-2 h-4 w-4" />
+                    Archive
+                  </DropdownMenuItem>
+                )}
+
+                {isHidden(quiz) ? (
+                  <DropdownMenuItem onClick={() => handleUnhide(quiz.id)} className="cursor-pointer">
+                    <Eye className="mr-2 h-4 w-4" />
+                    Unhide
+                  </DropdownMenuItem>
+                ) : (
+                  <DropdownMenuItem onClick={() => handleHide(quiz.id)} className="cursor-pointer">
+                    <EyeOff className="mr-2 h-4 w-4" />
+                    Hide
+                  </DropdownMenuItem>
+                )}
+
+                <DropdownMenuItem
+                  onClick={() => {
+                    if (confirm("Delete this quiz? This will permanently remove it and all results. This cannot be undone.")) {
+                      handleDelete(quiz.id);
+                    }
+                  }}
+                  className="cursor-pointer text-red-600 focus:text-red-700"
+                >
+                  <Trash2 className="mr-2 h-4 w-4" />
+                  Delete
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
           </div>
 
           <CardDescription>{quiz.description}</CardDescription>
@@ -664,13 +716,19 @@ function QuizzesPageInner() {
         <CardContent className="flex-grow">
           <div className="flex justify-between text-sm text-muted-foreground">
             <span>{quiz.questions.length} Questions</span>
+
             {average !== null && average !== undefined ? (
               <span className="flex items-center gap-1 font-semibold text-primary">
                 <Percent className="h-4 w-4" />
                 {average}% Avg. Score
               </span>
+            ) : adminAveragesLoading ? (
+              <span className="flex items-center gap-2 text-sm text-muted-foreground">
+                <Loader2 className="h-4 w-4 animate-spin" />
+                Calculating…
+              </span>
             ) : (
-              <span className="flex items-center gap-1 text-sm text-muted-foreground">No attempts yet</span>
+              <span className="text-sm text-muted-foreground">No attempts yet</span>
             )}
           </div>
         </CardContent>
@@ -691,6 +749,7 @@ function QuizzesPageInner() {
             )}
             View Analytics
           </Button>
+
           <Button
             onClick={() => {
               setLoadingAction(`edit-${quiz.id}`);
@@ -698,11 +757,7 @@ function QuizzesPageInner() {
             }}
             disabled={isActionLoading("edit")}
           >
-            {isActionLoading("edit") ? (
-              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-            ) : (
-              <Edit className="mr-2 h-4 w-4" />
-            )}
+            {isActionLoading("edit") ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Edit className="mr-2 h-4 w-4" />}
             Edit Quiz
           </Button>
         </CardFooter>
@@ -718,34 +773,12 @@ function QuizzesPageInner() {
           <div className="flex items-center justify-between">
             <CardTitle className="flex items-center gap-2">
               <span className="mr-2">{quiz.title}</span>
-              <span className="inline-flex items-center gap-2 whitespace-nowrap">
-                {(quiz as any).course && (quiz as any).course !== "unassigned" && (
-                  <Badge variant="outline" className="whitespace-nowrap">
-                    {String((quiz as any).course).toUpperCase()}
-                  </Badge>
-                )}
-                {courseOf(quiz) === "a+" && (
-                  <Badge variant="outline" className="whitespace-nowrap">
-                    {String(coreOf(quiz)).replace("core", "Core ").toUpperCase()}
-                  </Badge>
-                )}
-                {isArchived(quiz) && (
-                  <Badge variant={getBadgeVariant("Archived")} className="whitespace-nowrap">
-                    Archived
-                  </Badge>
-                )}
-                {isHidden(quiz) && (
-                  <Badge variant="destructive" className="whitespace-nowrap">
-                    Hidden
-                  </Badge>
-                )}
-              </span>
             </CardTitle>
-
             <StatusBadge quiz={quiz} />
           </div>
           <CardDescription>{quiz.description}</CardDescription>
         </CardHeader>
+
         <CardContent className="flex-grow">
           <div className="flex justify-between text-sm text-muted-foreground">
             <span>{quiz.questions.length} Questions</span>
@@ -757,6 +790,7 @@ function QuizzesPageInner() {
             ) : null}
           </div>
         </CardContent>
+
         <CardFooter className="flex flex-col items-stretch gap-2">
           {hasAttempts ? (
             <>
@@ -786,14 +820,12 @@ function QuizzesPageInner() {
     );
   }
 
-  /* ── Render ────────────────────────────────────────────────────────────── */
+  /* ── Render ──────────────────────────────────────────────── */
 
   return (
     <div className="space-y-6">
-      {/* ======== Batch dashboard (admins) ======== */}
       {roleIsAdmin && <BatchGradesDashboard />}
 
-      {/* Header */}
       <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
         <div>
           <h1 className="text-3xl font-bold font-headline">Quizzes</h1>
@@ -801,6 +833,7 @@ function QuizzesPageInner() {
             {roleIsAdmin ? "Manage your quizzes here." : "Your course quizzes"}
           </p>
         </div>
+
         {roleIsAdmin ? (
           <Button asChild className="bg-accent text-accent-foreground hover:bg-accent/90">
             <Link href="/dashboard/quizzes/new">
@@ -817,13 +850,7 @@ function QuizzesPageInner() {
               </span>
             </Badge>
 
-            {/* Re-assign button visible, but protected by admin code panel */}
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={openReassignPanel}
-              title="Re-assign Course (Admin code required)"
-            >
+            <Button variant="outline" size="sm" onClick={openReassignPanel}>
               <RefreshCcw className="mr-2 h-4 w-4" />
               Re-assign
             </Button>
@@ -831,16 +858,12 @@ function QuizzesPageInner() {
         )}
       </div>
 
-      {/* Admin filters */}
       {roleIsAdmin && (
         <div className="flex flex-wrap items-center gap-2">
           <Button variant={adminFilter === "all" ? "default" : "outline"} onClick={() => setAdminFilter("all")}>
             All
           </Button>
-          <Button
-            variant={adminFilter === "security+" ? "default" : "outline"}
-            onClick={() => setAdminFilter("security+")}
-          >
+          <Button variant={adminFilter === "security+" ? "default" : "outline"} onClick={() => setAdminFilter("security+")}>
             <Shield className="mr-2 h-4 w-4" />
             Security+
           </Button>
@@ -854,7 +877,6 @@ function QuizzesPageInner() {
         </div>
       )}
 
-      {/* ======= Student Initial Chooser (first time only) ======= */}
       {!roleIsAdmin && showInitialChooser && (
         <Card>
           <CardHeader>
@@ -863,16 +885,10 @@ function QuizzesPageInner() {
           </CardHeader>
           <CardContent className="space-y-4">
             <div className="flex flex-wrap gap-2">
-              <Button
-                variant={pendingCourse === "security+" ? "default" : "outline"}
-                onClick={() => setPendingCourse("security+")}
-              >
+              <Button variant={pendingCourse === "security+" ? "default" : "outline"} onClick={() => setPendingCourse("security+")}>
                 Security+
               </Button>
-              <Button
-                variant={pendingCourse === "a+" ? "default" : "outline"}
-                onClick={() => setPendingCourse("a+")}
-              >
+              <Button variant={pendingCourse === "a+" ? "default" : "outline"} onClick={() => setPendingCourse("a+")}>
                 A+
               </Button>
             </div>
@@ -895,14 +911,11 @@ function QuizzesPageInner() {
         </Card>
       )}
 
-      {/* ======= Student Re-assign Panel (Admin code required) ======= */}
       {!roleIsAdmin && showReassignPanel && (
         <Card>
           <CardHeader>
             <CardTitle>Re-assign Course</CardTitle>
-            <CardDescription>
-              Admin authorization required. Enter the admin code, then choose the new course.
-            </CardDescription>
+            <CardDescription>Admin authorization required. Enter the admin code, then choose the new course.</CardDescription>
           </CardHeader>
           <CardContent className="space-y-3">
             <div className="flex items-center gap-2">
@@ -916,25 +929,16 @@ function QuizzesPageInner() {
             </div>
 
             <div className="flex flex-wrap gap-2">
-              <Button
-                variant={reassignCourse === "security+" ? "default" : "outline"}
-                onClick={() => setReassignCourse("security+")}
-              >
+              <Button variant={reassignCourse === "security+" ? "default" : "outline"} onClick={() => setReassignCourse("security+")}>
                 Security+
               </Button>
-              <Button
-                variant={reassignCourse === "a+" ? "default" : "outline"}
-                onClick={() => setReassignCourse("a+")}
-              >
+              <Button variant={reassignCourse === "a+" ? "default" : "outline"} onClick={() => setReassignCourse("a+")}>
                 A+
               </Button>
             </div>
           </CardContent>
           <CardFooter className="flex items-center gap-2">
-            <Button
-              onClick={confirmReassignCourse}
-              disabled={reassignSubmitting || !reassignCourse || !adminCodeInput.trim()}
-            >
+            <Button onClick={confirmReassignCourse} disabled={reassignSubmitting || !reassignCourse || !adminCodeInput.trim()}>
               {reassignSubmitting ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
               Apply
             </Button>
@@ -945,7 +949,6 @@ function QuizzesPageInner() {
         </Card>
       )}
 
-      {/* Content */}
       {loading ? (
         <Grid>
           {[...Array(3)].map((_, i) => (
@@ -957,6 +960,7 @@ function QuizzesPageInner() {
           {(() => {
             const map = buildAdminDroppableMap(adminQuizzes);
             const order = droppableOrderForAdmin();
+
             return (
               <div className="space-y-2">
                 {order.map((dropId) => {
@@ -1007,6 +1011,7 @@ function QuizzesPageInner() {
           if (studentCourse === "a+") {
             const allAPlus = studentQuizzes.filter((q) => courseOf(q) === "a+");
             const grouped = groupAPlusByCore(allAPlus);
+
             const core1List = grouped.core1;
             const core2List = grouped.core2;
             const coreUnassigned = grouped.unassigned;
@@ -1014,22 +1019,13 @@ function QuizzesPageInner() {
             return (
               <div className="space-y-6">
                 <div className="flex flex-wrap items-center gap-2">
-                  <Button
-                    variant={studentAPlusFilter === "all" ? "default" : "outline"}
-                    onClick={() => setStudentAPlusFilter("all")}
-                  >
+                  <Button variant={studentAPlusFilter === "all" ? "default" : "outline"} onClick={() => setStudentAPlusFilter("all")}>
                     All quizzes
                   </Button>
-                  <Button
-                    variant={studentAPlusFilter === "core1" ? "default" : "outline"}
-                    onClick={() => setStudentAPlusFilter("core1")}
-                  >
+                  <Button variant={studentAPlusFilter === "core1" ? "default" : "outline"} onClick={() => setStudentAPlusFilter("core1")}>
                     Core 1
                   </Button>
-                  <Button
-                    variant={studentAPlusFilter === "core2" ? "default" : "outline"}
-                    onClick={() => setStudentAPlusFilter("core2")}
-                  >
+                  <Button variant={studentAPlusFilter === "core2" ? "default" : "outline"} onClick={() => setStudentAPlusFilter("core2")}>
                     Core 2
                   </Button>
                 </div>
@@ -1037,6 +1033,7 @@ function QuizzesPageInner() {
                 {studentAPlusFilter === "all" && (
                   <div className="space-y-8">
                     <SectionDivider label="A+ — ALL CORES" />
+
                     {core1List.length > 0 && (
                       <>
                         <SectionDivider label="CORE 1" />
@@ -1047,6 +1044,7 @@ function QuizzesPageInner() {
                         </div>
                       </>
                     )}
+
                     {core2List.length > 0 && (
                       <>
                         <SectionDivider label="CORE 2" />
@@ -1057,6 +1055,7 @@ function QuizzesPageInner() {
                         </div>
                       </>
                     )}
+
                     {coreUnassigned.length > 0 && (
                       <>
                         <SectionDivider label="UNASSIGNED CORE" />
@@ -1108,13 +1107,12 @@ function QuizzesPageInner() {
           );
         })()
       ) : (
-        !roleIsAdmin && !showInitialChooser && (
+        !roleIsAdmin &&
+        !showInitialChooser && (
           <Card>
             <CardHeader>
               <CardTitle>No Quizzes Available</CardTitle>
-              <CardDescription>
-                There are no quizzes for your course yet. Please check back later.
-              </CardDescription>
+              <CardDescription>There are no quizzes for your course yet. Please check back later.</CardDescription>
             </CardHeader>
           </Card>
         )

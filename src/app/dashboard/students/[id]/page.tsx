@@ -19,12 +19,53 @@ import {
   ShieldCheck,
 } from "lucide-react";
 import { StudentStats } from "@/components/dashboard/student-stats";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import Link from "next/link";
 import { Button } from "@/components/ui/button";
-import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
+import {
+  Accordion,
+  AccordionContent,
+  AccordionItem,
+  AccordionTrigger,
+} from "@/components/ui/accordion";
 import { useLoading } from "@/context/loading-context";
+
+/* ────────────────────────────────────────────────────────────────
+   NEW: course/core helpers (same behavior as quizzes page)
+   Only used for displaying the CORE tag for A+ quizzes.
+──────────────────────────────────────────────────────────────── */
+type CourseTag = "security+" | "a+" | "unassigned";
+type APlusCore = "core1" | "core2" | "unassigned";
+
+function normalizeCourseTag(x: any): CourseTag {
+  const v = (x ?? "").toString().trim().toLowerCase();
+  if (v === "security+" || v === "a+") return v as CourseTag;
+  return "unassigned";
+}
+
+function normalizeAPlusCore(x: any): APlusCore {
+  const v = (x ?? "").toString().trim().toLowerCase();
+  if (v === "core1" || v === "core2") return v as APlusCore;
+  return "unassigned";
+}
+
+const courseOf = (q: any): CourseTag => normalizeCourseTag(q?.course);
+const coreOf = (q: any): APlusCore => normalizeAPlusCore(q?.core);
+
+function coreLabel(core: APlusCore) {
+  if (core === "core1") return "CORE 1";
+  if (core === "core2") return "CORE 2";
+  return "UNASSIGNED CORE";
+}
+
+/* ──────────────────────────────────────────────────────────────── */
 
 const AnswerOption = ({
   option,
@@ -87,13 +128,19 @@ export default function StudentDetailPage() {
     const fetchData = async () => {
       setLoading(true);
       try {
-        const [studentData, quizzesData] = await Promise.all([getStudent(id), getQuizzesForUser(id)]);
+        const [studentData, quizzesData] = await Promise.all([
+          getStudent(id),
+          getQuizzesForUser(id),
+        ]);
         setStudent(studentData);
 
         // Filter out practice results & quizzes w/ no official results
-        const attemptedQuizzes = quizzesData
+        // NEW: normalize course/core so we can display CORE tags for A+ quizzes
+        const attemptedQuizzes = (quizzesData ?? [])
           .map((q) => ({
             ...q,
+            course: normalizeCourseTag((q as any).course),
+            core: normalizeAPlusCore((q as any).core),
             results: q.results?.filter((r) => !r.isPractice) || [],
           }))
           .filter((q) => q.results.length > 0);
@@ -118,7 +165,7 @@ export default function StudentDetailPage() {
           q.results.forEach((r) => {
             sumFractions += r.score / r.total;
             count += 1;
-          })
+          }),
         );
         setAttemptsCount(count);
         setAvgScore(count > 0 ? (sumFractions / count) * 100 : null);
@@ -164,12 +211,7 @@ export default function StudentDetailPage() {
       <div className="text-center">
         <h1 className="text-2xl font-bold">Student Not Found</h1>
         <p>The requested student could not be found.</p>
-        <Button
-          asChild
-          variant="link"
-          className="mt-4"
-          onClick={handleBackClick}
-        >
+        <Button asChild variant="link" className="mt-4" onClick={handleBackClick}>
           <Link href="/dashboard">
             <ArrowLeft className="mr-2 h-4 w-4" />
             Back to Dashboard
@@ -179,7 +221,10 @@ export default function StudentDetailPage() {
     );
   }
 
-  const findOriginalQuestion = (quizId: string, questionText: string): Question | undefined => {
+  const findOriginalQuestion = (
+    quizId: string,
+    questionText: string,
+  ): Question | undefined => {
     const masterQuiz = masterQuizzes[quizId];
     return masterQuiz?.questions.find((q) => q.question === questionText);
   };
@@ -189,12 +234,7 @@ export default function StudentDetailPage() {
       <div>
         {/* HEADER: responsive layout for mobile to avoid horizontal scroll */}
         <div className="flex flex-col gap-3 mb-4 sm:flex-row sm:items-start sm:justify-between">
-          <Button
-            asChild
-            variant="outline"
-            size="sm"
-            className="w-full sm:w-auto"
-          >
+          <Button asChild variant="outline" size="sm" className="w-full sm:w-auto">
             <Link href="/dashboard" onClick={handleBackClick}>
               <ArrowLeft className="mr-2 h-4 w-4" />
               Back to All Students
@@ -202,29 +242,19 @@ export default function StudentDetailPage() {
           </Button>
 
           <div className="flex flex-col w-full gap-2 sm:w-auto sm:flex-row sm:flex-wrap sm:justify-end">
-            <Button
-              asChild
-              variant="outline"
-              className="w-full sm:w-auto"
-            >
+            <Button asChild variant="outline" className="w-full sm:w-auto">
               <Link href={`/dashboard/students/${id}/evaluations`}>
                 <List className="mr-2 h-4 w-4" />
                 View Evaluations
               </Link>
             </Button>
-            <Button
-              asChild
-              className="w-full sm:w-auto"
-            >
+            <Button asChild className="w-full sm:w-auto">
               <Link href={`/dashboard/students/${id}/evaluation`}>
                 <FilePen className="mr-2 h-4 w-4" />
                 New Daily Evaluation
               </Link>
             </Button>
-            <Button
-              asChild
-              className="w-full sm:w-auto"
-            >
+            <Button asChild className="w-full sm:w-auto">
               <Link href={`/dashboard/students/${id}/final-evaluation`}>
                 <ShieldCheck className="mr-2 h-4 w-4" />
                 New Final Evaluation
@@ -233,7 +263,9 @@ export default function StudentDetailPage() {
           </div>
         </div>
 
-        <h1 className="text-3xl font-bold font-headline break-words">{student.name}</h1>
+        <h1 className="text-3xl font-bold font-headline break-words">
+          {student.name}
+        </h1>
         <p className="text-muted-foreground break-words">{student.email}</p>
       </div>
 
@@ -306,9 +338,30 @@ export default function StudentDetailPage() {
             {quizzes.map((quiz) => (
               <Card key={quiz.id}>
                 <CardHeader>
-                  <CardTitle className="break-words">{quiz.title}</CardTitle>
-                  <CardDescription className="break-words">{quiz.description}</CardDescription>
+                  {/* NEW: show course + core tag (CORE shown only for A+) */}
+                  <CardTitle className="flex flex-wrap items-center gap-2 break-words">
+                    <span className="mr-1">{quiz.title}</span>
+
+                    <span className="inline-flex items-center gap-2 whitespace-nowrap">
+                      {courseOf(quiz) !== "unassigned" && (
+                        <Badge variant="outline" className="whitespace-nowrap">
+                          {courseOf(quiz).toUpperCase()}
+                        </Badge>
+                      )}
+
+                      {courseOf(quiz) === "a+" && (
+                        <Badge variant="outline" className="whitespace-nowrap">
+                          {coreLabel(coreOf(quiz))}
+                        </Badge>
+                      )}
+                    </span>
+                  </CardTitle>
+
+                  <CardDescription className="break-words">
+                    {quiz.description}
+                  </CardDescription>
                 </CardHeader>
+
                 <CardContent>
                   <Accordion type="single" collapsible className="w-full">
                     <AccordionItem value="item-1">
@@ -318,6 +371,7 @@ export default function StudentDetailPage() {
                           {quiz.results?.length} Attempt{quiz.results?.length === 1 ? "" : "s"}
                         </div>
                       </AccordionTrigger>
+
                       <AccordionContent className="pt-4 space-y-2">
                         <Accordion type="multiple" className="w-full space-y-2">
                           {[...(quiz.results || [])]
@@ -341,9 +395,13 @@ export default function StudentDetailPage() {
                                     </Badge>
                                   </div>
                                 </AccordionTrigger>
+
                                 <AccordionContent className="pt-2 pb-4 space-y-4">
                                   {result.answeredQuestions.map((item, qIndex) => {
-                                    const originalQuestion = findOriginalQuestion(quiz.id, item.question);
+                                    const originalQuestion = findOriginalQuestion(
+                                      quiz.id,
+                                      item.question,
+                                    );
                                     if (!originalQuestion) return null;
 
                                     const userAnswerArray = Array.isArray(item.userAnswer)
@@ -372,6 +430,7 @@ export default function StudentDetailPage() {
                                             <XCircle className="h-5 w-5 text-red-500 flex-shrink-0" />
                                           )}
                                         </div>
+
                                         <div className="mt-2 text-sm space-y-1">
                                           <p className="font-medium">Options:</p>
                                           {originalQuestion.options.map((opt) => (
