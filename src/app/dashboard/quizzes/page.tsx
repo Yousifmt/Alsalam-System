@@ -80,6 +80,8 @@ type AdminFilter = "all" | "security+" | "a+" | "hidden";
 type APlusCore = "core1" | "core2" | "unassigned";
 const CORE_ORDER: APlusCore[] = ["core1", "core2", "unassigned"];
 
+type AdminAPlusFilter = "all" | "core1" | "core2" | "unassigned";
+
 const COURSE_PASSWORDS: Record<StudentCourseTag, string> = {
   "security+": "sy0-701",
   "a+": "202-1201",
@@ -260,6 +262,9 @@ function QuizzesPageInner() {
   // ADMIN filter
   const [adminFilter, setAdminFilter] = useState<AdminFilter>("all");
 
+  // ✅ NEW: ADMIN A+ core filter (beautiful sub-filter like student view)
+  const [adminAPlusFilter, setAdminAPlusFilter] = useState<AdminAPlusFilter>("all");
+
   // STUDENT A+ filter
   type StudentAPlusFilter = "all" | "core1" | "core2";
   const [studentAPlusFilter, setStudentAPlusFilter] = useState<StudentAPlusFilter>("all");
@@ -271,6 +276,11 @@ function QuizzesPageInner() {
   useEffect(() => {
     if (choose) setShowInitialChooser(true);
   }, [choose]);
+
+  // ✅ reset admin A+ sub-filter when leaving A+ view
+  useEffect(() => {
+    if (adminFilter !== "a+") setAdminAPlusFilter("all");
+  }, [adminFilter]);
 
   useEffect(() => {
     if (!roleReady || !userId) return;
@@ -400,6 +410,24 @@ function QuizzesPageInner() {
   /* ── DnD (admin) ─────────────────────────────────────────── */
 
   function buildAdminDroppableMap(list: Quiz[]): Record<string, Quiz[]> {
+    // ✅ NEW: when admin is viewing A+, split it into Core 1 / Core 2 / Unassigned Core (same vibe as student view)
+    if (adminFilter === "a+") {
+      const grouped = groupAPlusByCore(list);
+      const fullMap: Record<string, Quiz[]> = {
+        "a+-core1": grouped.core1,
+        "a+-core2": grouped.core2,
+        "a+-unassigned": grouped.unassigned,
+      };
+
+      if (adminAPlusFilter === "all") return fullMap;
+
+      return {
+        "a+-core1": adminAPlusFilter === "core1" ? fullMap["a+-core1"] : [],
+        "a+-core2": adminAPlusFilter === "core2" ? fullMap["a+-core2"] : [],
+        "a+-unassigned": adminAPlusFilter === "unassigned" ? fullMap["a+-unassigned"] : [],
+      };
+    }
+
     const byCourse = groupByCourseTagSafeWrapper(list);
     return {
       "security+": byCourse["security+"],
@@ -409,8 +437,15 @@ function QuizzesPageInner() {
   }
 
   function droppableOrderForAdmin(): string[] {
+    // ✅ NEW: A+ view gets sub-sections like student view
+    if (adminFilter === "a+") {
+      if (adminAPlusFilter === "core1") return ["a+-core1"];
+      if (adminAPlusFilter === "core2") return ["a+-core2"];
+      if (adminAPlusFilter === "unassigned") return ["a+-unassigned"];
+      return ["a+-core1", "a+-core2", "a+-unassigned"];
+    }
+
     if (adminFilter === "security+") return ["security+"];
-    if (adminFilter === "a+") return ["a+"];
     if (adminFilter === "hidden") return ["security+", "a+", "unassigned"];
     return ["security+", "a+", "unassigned"];
   }
@@ -419,6 +454,12 @@ function QuizzesPageInner() {
     if (id === "security+") return "SECURITY+";
     if (id === "a+") return "A+";
     if (id === "unassigned") return "UNASSIGNED COURSE";
+
+    // ✅ NEW: A+ core section labels (beautiful + clear)
+    if (id === "a+-core1") return "A+ — CORE 1";
+    if (id === "a+-core2") return "A+ — CORE 2";
+    if (id === "a+-unassigned") return "A+ — UNASSIGNED CORE";
+
     return id.toUpperCase();
   }
 
@@ -859,21 +900,68 @@ function QuizzesPageInner() {
       </div>
 
       {roleIsAdmin && (
-        <div className="flex flex-wrap items-center gap-2">
-          <Button variant={adminFilter === "all" ? "default" : "outline"} onClick={() => setAdminFilter("all")}>
-            All
-          </Button>
-          <Button variant={adminFilter === "security+" ? "default" : "outline"} onClick={() => setAdminFilter("security+")}>
-            <Shield className="mr-2 h-4 w-4" />
-            Security+
-          </Button>
-          <Button variant={adminFilter === "a+" ? "default" : "outline"} onClick={() => setAdminFilter("a+")}>
-            <Cpu className="mr-2 h-4 w-4" />
-            A+
-          </Button>
-          <Button variant={adminFilter === "hidden" ? "default" : "outline"} onClick={() => setAdminFilter("hidden")}>
-            Hidden
-          </Button>
+        <div className="space-y-3">
+          <div className="flex flex-wrap items-center gap-2">
+            <Button variant={adminFilter === "all" ? "default" : "outline"} onClick={() => setAdminFilter("all")}>
+              All
+            </Button>
+            <Button variant={adminFilter === "security+" ? "default" : "outline"} onClick={() => setAdminFilter("security+")}>
+              <Shield className="mr-2 h-4 w-4" />
+              Security+
+            </Button>
+            <Button variant={adminFilter === "a+" ? "default" : "outline"} onClick={() => setAdminFilter("a+")}>
+              <Cpu className="mr-2 h-4 w-4" />
+              A+
+            </Button>
+            <Button variant={adminFilter === "hidden" ? "default" : "outline"} onClick={() => setAdminFilter("hidden")}>
+              Hidden
+            </Button>
+          </div>
+
+          {/* ✅ NEW: A+ sub-filter (Core 1 / Core 2) like student view */}
+          {adminFilter === "a+" && (
+            <Card className="border-dashed">
+              <CardHeader className="pb-3">
+                <CardTitle className="text-base flex items-center gap-2">
+                  <Cpu className="h-4 w-4" />
+                  A+ view
+                </CardTitle>
+                <CardDescription>Filter A+ quizzes by core (same layout style as the student view).</CardDescription>
+              </CardHeader>
+              <CardContent className="pt-0">
+                <div className="flex flex-wrap items-center gap-2">
+                  <Button
+                    variant={adminAPlusFilter === "all" ? "default" : "outline"}
+                    onClick={() => setAdminAPlusFilter("all")}
+                  >
+                    All cores
+                  </Button>
+                  <Button
+                    variant={adminAPlusFilter === "core1" ? "default" : "outline"}
+                    onClick={() => setAdminAPlusFilter("core1")}
+                  >
+                    Core 1
+                  </Button>
+                  <Button
+                    variant={adminAPlusFilter === "core2" ? "default" : "outline"}
+                    onClick={() => setAdminAPlusFilter("core2")}
+                  >
+                    Core 2
+                  </Button>
+                  <Button
+                    variant={adminAPlusFilter === "unassigned" ? "default" : "outline"}
+                    onClick={() => setAdminAPlusFilter("unassigned")}
+                  >
+                    Unassigned
+                  </Button>
+
+                  <Badge variant="outline" className="ml-auto">
+                    Drag & drop reordering stays enabled
+                  </Badge>
+                </div>
+              </CardContent>
+            </Card>
+          )}
         </div>
       )}
 
